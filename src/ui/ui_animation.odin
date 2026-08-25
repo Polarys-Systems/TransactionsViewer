@@ -27,7 +27,7 @@ UI_Anim_Float :: struct {
 	active:   bool,
 }
 
-ui_ease_sample :: proc(t: f32, ease: UI_Ease = .Out_Cubic) -> f32 {
+ease_sample :: proc(t: f32, ease: UI_Ease = .Out_Cubic) -> f32 {
 	x := math.clamp(t, 0.0, 1.0)
 	switch ease {
 	case .Linear:
@@ -49,7 +49,7 @@ ui_ease_sample :: proc(t: f32, ease: UI_Ease = .Out_Cubic) -> f32 {
 	return x
 }
 
-ui_anim_float_set :: proc(anim: ^UI_Anim_Float, value: f32) {
+anim_float_set :: proc(anim: ^UI_Anim_Float, value: f32) {
 	if anim == nil {
 		return
 	}
@@ -61,7 +61,7 @@ ui_anim_float_set :: proc(anim: ^UI_Anim_Float, value: f32) {
 	anim.active = false
 }
 
-ui_anim_float_to :: proc(
+anim_float_to :: proc(
 	anim: ^UI_Anim_Float,
 	target: f32,
 	duration: f32 = 0.18,
@@ -81,7 +81,7 @@ ui_anim_float_to :: proc(
 	}
 }
 
-ui_anim_float_tick :: proc(anim: ^UI_Anim_Float, dt_seconds: f32) -> f32 {
+anim_float_tick :: proc(anim: ^UI_Anim_Float, dt_seconds: f32) -> f32 {
 	if anim == nil {
 		return 0.0
 	}
@@ -102,7 +102,7 @@ ui_anim_float_tick :: proc(anim: ^UI_Anim_Float, dt_seconds: f32) -> f32 {
 	return anim.value
 }
 
-ui_anim_float_settled :: proc(anim: ^UI_Anim_Float, epsilon: f32 = 0.001) -> bool {
+anim_float_settled :: proc(anim: ^UI_Anim_Float, epsilon: f32 = 0.001) -> bool {
 	if anim == nil {
 		return true
 	}

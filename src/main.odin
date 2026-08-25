@@ -1,6 +1,5 @@
 package main
 
-import "vendor:fontstash"
 import "core:c"
 import "core:slice"
 import "core:fmt"
