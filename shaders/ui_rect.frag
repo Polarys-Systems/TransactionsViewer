@@ -1,13 +1,23 @@
 #version 460
 
+#extension GL_EXT_nonuniform_qualifier : require
+
 layout(location = 0) in vec2       frag_local_pos;
 layout(location = 1) in flat vec2  frag_half_size;
 layout(location = 2) in vec4       frag_color;
 layout(location = 3) in vec2       frag_uv;
 layout(location = 4) in flat float frag_radius;
 layout(location = 5) in flat float frag_edge;
+layout(location = 6) in flat vec4 frag_clip_rect;
+layout(location = 7) in flat uint frag_texture_index;
+layout(location = 8) in flat uint frag_sampler_index;
 
 layout(location = 0) out vec4 out_color;
+
+layout(set = 0, binding = 0) uniform texture2D textures[];
+layout(set = 0, binding = 1) uniform sampler samplers[];
+
+const uint NO_TEXTURE = 0xffffffffu;
 
 float rounded_rect_sdf(vec2 p, vec2 half_size, float radius)
 {
@@ -20,6 +30,23 @@ float rounded_rect_sdf(vec2 p, vec2 half_size, float radius)
 
 void main()
 {
+    if (gl_FragCoord.x < frag_clip_rect.x || gl_FragCoord.y < frag_clip_rect.y ||
+        gl_FragCoord.x >= frag_clip_rect.z || gl_FragCoord.y >= frag_clip_rect.w) {
+        discard;
+    }
+
+    if (frag_texture_index != NO_TEXTURE) {
+        float glyph_alpha = texture(sampler2D(
+            textures[nonuniformEXT(frag_texture_index)],
+            samplers[nonuniformEXT(frag_sampler_index)]
+        ), frag_uv).r;
+        if (glyph_alpha <= 0.0) {
+            discard;
+        }
+        out_color = vec4(frag_color.rgb, frag_color.a * glyph_alpha);
+        return;
+    }
+
     float max_radius = min(frag_half_size.x, frag_half_size.y);
     float radius = clamp(frag_radius, 0.0, max_radius);
 

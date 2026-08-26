@@ -10,6 +10,7 @@ MAX_WINDOWS    :: #config(MAX_WINDOWS, 128)
 MAX_MENU_BOXES :: #config(MAX_MENU_BOXES, 64)
 MAX_COMMANDS   :: #config(MAX_COMMANDS, 1024) 
 MAX_STYLES     :: #config(MAX_STYLES, 128)
+MAX_LAYOUT     :: #config(MAX_STYLES, 128)
 
 // --------------------------------------------------------------- //
 
@@ -21,6 +22,28 @@ UiResult :: enum {
 	MODIFIED,
 	PRESSED,
 	RELEASED,
+}
+
+// --------------------------------------------------------------- //
+
+UiAlignment :: enum {
+	NONE, 
+	RIGHT,
+	CENTER,
+	TOP,
+	BOTTOM,
+}
+
+UiAlignments :: bit_set[UiAlignment;u8]
+
+// --------------------------------------------------------------- //
+
+UiIcon :: enum {
+	NONE,
+	CHECK,
+	CHECK_UNCHECKED,
+	RESIZE, 
+	CLOSE,
 }
 
 // --------------------------------------------------------------- //
@@ -57,11 +80,42 @@ UiStyle :: struct {
 
 // --------------------------------------------------------------- //
 
+default_style :: UiStyle {
+	font_id = 0,
+	color_top = {0.2, 0.2, 0.2, 1.0},
+	color_bottom = {0.15, 0.15, 0.15, 1.0},
+	radius = 4,
+	edge   = 2, 
+	border = 0
+}
+
+// --------------------------------------------------------------- //
+
 UiBox :: struct {
 	rect          : Rect2d,
 	boundary_rect : Rect2d,
 	text          : strings.Builder,
 	style         : UiStyle
+}
+
+// --------------------------------------------------------------- //
+
+UiLayout :: struct {
+	rect      : Rect2d,
+	content   : Rect2d,
+	box_size  : [2]f32,
+	margin    : f32,
+	alignment : UiAlignments,
+}
+
+// --------------------------------------------------------------- //
+
+default_layout :: UiLayout {
+	rect      = {-1, -1, -1, -1},
+	content   = {-1, -1, 0, 0},
+	box_size  = {140, 40},
+	margin    = 4,
+	alignment = {.NONE}
 }
 
 // --------------------------------------------------------------- //
@@ -88,12 +142,30 @@ UiContext :: struct {
 
 	// styling
 	//
-	styles : [MAX_STYLES]UiStyle
+	styles : [MAX_STYLES]UiStyle,
+	n_styles : i32,
+
+	// layout 
+	// 
+	layouts : [MAX_LAYOUT]UiLayout,
+	n_layouts : i32,
 }
 
 // --------------------------------------------------------------- //
 
-init :: proc( allocator := context.allocator ) -> (context_t : ^UiContext) {
+clip_rect :: proc(rect : Rect2d, point : [2]f32) -> bool {
+	if(point.x >= rect.x && point.x <= rect.x + rect.width) {
+		if(point.y >= rect.y && point.y <= rect.y + rect.height) {
+			return true 
+		}
+	}
+
+	return false
+}
+
+// --------------------------------------------------------------- //
+
+init :: proc(allocator := context.allocator ) -> (context_t : ^UiContext) {
 	context_t.allocator = allocator
 
 	return context_t
@@ -102,13 +174,15 @@ init :: proc( allocator := context.allocator ) -> (context_t : ^UiContext) {
 // --------------------------------------------------------------- //
 
 begin :: proc(self : ^UiContext, window_w, window_h : f32) {
-	self.screen.width = window_w
-	self.screen.height = window_h
-	self.n_windows = -1
-	self.n_boxes = -1
+	self.screen.width    = window_w
+	self.screen.height   = window_h
+	self.n_windows       = -1
+	self.n_boxes         = -1
 	self.n_pop_out_boxes = -1
-	self.n_menu_boxes = -1
-	self.n_commands = -1
+	self.n_menu_boxes    = -1
+	self.n_commands      = -1
+	self.n_styles        = -1
+	self.n_layouts       = -1
 }
 
 // --------------------------------------------------------------- //
@@ -129,12 +203,27 @@ begin_window :: proc(self : ^UiContext, win_rect : Rect2d) -> (^UiContext, bool)
 		boundary_rect = win_rect,
 	}
 
+	style_push(self)
+
 	return self, true
 }
 
 // --------------------------------------------------------------- //
 
 end_window :: proc(self : ^UiContext, close : bool) {
+
+}
+
+// --------------------------------------------------------------- //
+
+new_box :: proc(self : ^UiContext, str : string, alignment : UiAlignments, rect : Rect2d) {
+	
+}
+
+// --------------------------------------------------------------- //
+
+// button amplified with args
+button_am :: proc(self : ^UiContext, str : string, rect : Rect2d = {-1, -1, -1, -1}, align := UiAlignments{.CENTER}) {
 
 }
 
@@ -165,3 +254,108 @@ set_mouse_pos :: proc(self : ^UiContext, mouse_pos : [2]f32) {
 }
 
 // --------------------------------------------------------------- //
+
+style_push :: proc(self : ^UiContext, style : UiStyle = default_style) {
+	self.n_styles += 1;
+	assert(self.n_styles < MAX_STYLES)
+
+	self.styles[self.n_styles] = style
+}
+
+// --------------------------------------------------------------- //
+
+style_push_font :: proc(self : ^UiContext, font : UiFont) {
+	assert(self.n_styles >= 0)
+
+	self.styles[self.n_styles].font_id = font
+}
+
+// --------------------------------------------------------------- //
+
+style_push_color :: proc(self : ^UiContext, color_top : [4]f32, color_bottom : [4]f32) {
+	assert(self.n_styles >= 0)
+
+	self.styles[self.n_styles].color_top[0] = color_top[0];
+	self.styles[self.n_styles].color_top[1] = color_top[1];
+	self.styles[self.n_styles].color_top[2] = color_top[2];
+	self.styles[self.n_styles].color_top[3] = color_top[3];
+
+	self.styles[self.n_styles].color_bottom[0] = color_bottom[0];
+	self.styles[self.n_styles].color_bottom[1] = color_bottom[1];
+	self.styles[self.n_styles].color_bottom[2] = color_bottom[2];
+	self.styles[self.n_styles].color_bottom[3] = color_bottom[3];
+}
+
+// --------------------------------------------------------------- //
+
+style_push_radius :: proc(self : ^UiContext, radius : f32) {
+	assert(self.n_styles >= 0)
+
+	self.styles[self.n_styles].radius = radius
+}
+
+// --------------------------------------------------------------- //
+
+style_push_border :: proc(self : ^UiContext, border : f32) {
+	assert(self.n_styles >= 0)
+
+	self.styles[self.n_styles].border = border
+}
+
+// --------------------------------------------------------------- //
+
+style_push_edge :: proc(self : ^UiContext, edge : f32) {
+	assert(self.n_styles >= 0)
+
+	self.styles[self.n_styles].edge = edge
+}
+
+// --------------------------------------------------------------- //
+
+layout_push :: proc(self: ^UiContext, layout := default_layout) {
+	self.n_layouts += 1
+	assert(self.n_layouts < MAX_LAYOUT)
+
+	self.layouts[self.n_layouts] = layout
+}
+
+// --------------------------------------------------------------- //
+
+layout_push_content :: proc(self: ^UiContext, content : Rect2d) {
+	assert(self.n_layouts >= 0)
+	
+	self.layouts[self.n_layouts].content = content 	
+}
+
+// --------------------------------------------------------------- //
+
+layout_push_rect :: proc(self: ^UiContext, rect : Rect2d) {
+	assert(self.n_layouts >= 0)
+	
+	self.layouts[self.n_layouts].rect = rect 	
+}
+
+// --------------------------------------------------------------- //
+
+layout_push_box_size :: proc(self: ^UiContext, box_size : [2]f32) {
+	assert(self.n_layouts >= 0)
+	
+	self.layouts[self.n_layouts].box_size[0] = box_size[0] 	
+	self.layouts[self.n_layouts].box_size[1] = box_size[1] 	
+}
+
+// --------------------------------------------------------------- //
+
+layout_push_margin :: proc(self: ^UiContext, margin : f32) {
+	assert(self.n_layouts >= 0)
+	
+	self.layouts[self.n_layouts].margin = margin 	
+}
+
+// --------------------------------------------------------------- //
+
+layout_push_alignment :: proc(self: ^UiContext, alignments : UiAlignments) {
+	assert(self.n_layouts >= 0)
+	
+	self.layouts[self.n_layouts].alignment = alignments
+}

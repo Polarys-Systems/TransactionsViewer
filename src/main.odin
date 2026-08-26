@@ -30,11 +30,6 @@ ui_ctx : ^mui.Context;
 
 // --------------------------------------------------------------- //
 
-window_data :: struct {
-	screen_width  : f32,
-	screen_height : f32,
-}
-
 window_pixel_scale :: proc(window: ^SDL.Window) -> [2]f32 {
 	if window == nil {
 		return {1, 1}
@@ -69,135 +64,6 @@ spall_enter :: proc "contextless" (proc_address, call_site_return_address: rawpt
 @(instrumentation_exit)
 spall_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
 	spall._buffer_end(&spall_ctx, &spall_buffer)
-}
-
-// --------------------------------------------------------------- //
-
-RectVert2D :: struct {
-	top_left        : [2]f32,
-	bottom_right    : [2]f32,
-	color_top       : [4]f32,
-	color_bottom    : [4]f32,
-	top_left_uv     : [2]f32,
-	bottom_right_uv : [2]f32,
-	radius          : f32,
-	edge            : f32,
-}
-
-RectVert2D_set_dim :: proc(self: ^RectVert2D, top_left : [2]f32, size: [2]f32) {
-	self.top_left[0] = top_left[0];
-	self.top_left[1] = top_left[1];
-
-	self.bottom_right[0] = top_left[0] + size[0];
-	self.bottom_right[1] = top_left[1] + size[1];
-}
-
-RectVert2D_set_color_top :: proc(self: ^RectVert2D, color: [4]f32) {
-	self.color_top[0] = color[0]
-	self.color_top[1] = color[1]
-	self.color_top[2] = color[2]
-	self.color_top[3] = color[3]
-}
-
-RectVert2D_set_color_bottom :: proc(self: ^RectVert2D, color: [4]f32) {
-	self.color_bottom[0] = color[0]
-	self.color_bottom[1] = color[1]
-	self.color_bottom[2] = color[2]
-	self.color_bottom[3] = color[3]
-}
-
-// Increases or decreases the size of the rect
-// 
-RectVert2D_add_offset :: proc(self: ^RectVert2D, offset: [2]f32) {
-	self.bottom_right[0] += offset[0];
-	self.bottom_right[1] += offset[1];
-}
-
-// Moves the rect top left top_left pixels
-//
-RectVert2D_move :: proc(self: ^RectVert2D, top_left: [2]f32) {
-	self.top_left[0] += top_left[0];
-	self.top_left[1] += top_left[1];
-}
-
-RectVert2D_create_vertex_attribute :: proc() -> [8]vk.VertexInputAttributeDescription {
-	return [?]vk.VertexInputAttributeDescription{
-		vk.VertexInputAttributeDescription{
-			location = 0, 
-			binding  = 0,
-			format   = .R32G32_SFLOAT,
-			offset   = 0,
-		},
-		vk.VertexInputAttributeDescription{
-			location = 1, 
-			binding  = 0,
-			format   = .R32G32_SFLOAT,
-			offset   = cast(u32)offset_of(RectVert2D, bottom_right),
-		},
-		vk.VertexInputAttributeDescription{
-			location = 2, 
-			binding  = 0,
-			format   = .R32G32B32A32_SFLOAT,
-			offset   = cast(u32)offset_of(RectVert2D, color_top),
-		},
-		vk.VertexInputAttributeDescription{
-			location = 3, 
-			binding  = 0,
-			format   = .R32G32B32A32_SFLOAT,
-			offset   = cast(u32)offset_of(RectVert2D, color_bottom),
-		},
-		vk.VertexInputAttributeDescription{
-			location = 4, 
-			binding  = 0,
-			format   = .R32G32_SFLOAT,
-			offset   = cast(u32)offset_of(RectVert2D, top_left_uv),
-		},
-		vk.VertexInputAttributeDescription{
-			location = 5, 
-			binding  = 0,
-			format   = .R32G32_SFLOAT,
-			offset   = cast(u32)offset_of(RectVert2D, bottom_right_uv),
-		},
-		vk.VertexInputAttributeDescription{
-			location = 6, 
-			binding  = 0,
-			format   = .R32_SFLOAT,
-			offset   = cast(u32)offset_of(RectVert2D, radius),
-		},
-		vk.VertexInputAttributeDescription{
-			location = 7, 
-			binding  = 0,
-			format   = .R32_SFLOAT,
-			offset   = cast(u32)offset_of(RectVert2D, edge),
-		},
-	}
-}
-
-RectVert2D_create_pipeline :: proc(ctx: ^gpu.Gpu_Context) -> gpu.Gpu_Pipeline {
-	rect_attr := RectVert2D_create_vertex_attribute()
-	rect_descriptor := gpu.gpu_pipeline_desc_default_2d();
-	rect_descriptor.VertShaderPath = "../shaders/ui_rect.vert.spv"; 
-	rect_descriptor.FragShaderPath = "../shaders/ui_rect.frag.spv"; 
-	rect_descriptor.VertShaderCode = #load("../shaders/ui_rect.vert.spv"); 
-	rect_descriptor.FragShaderCode = #load("../shaders/ui_rect.frag.spv"); 
-	rect_descriptor.VertexAttributes = rect_attr[:]
-	rect_descriptor.VertexBindings = []vk.VertexInputBindingDescription {
-		vk.VertexInputBindingDescription {
-			binding = 0,
-			stride  = 18 * size_of(f32),
-			inputRate = .INSTANCE
-		}
-	}
-	window_index_range := [1]vk.PushConstantRange{{
-		stageFlags = {.VERTEX},
-		offset     = 0,
-		size       = size_of(window_data),
-	}}
-	rect_descriptor.PushConstants = window_index_range[:]
-
-	// The descriptor slices reference locals, so Vulkan must consume them before
-	// this procedure returns.
-	return gpu.gpu_create_graphics_pipeline(ctx, rect_descriptor)
 }
 
 // --------------------------------------------------------------- //
@@ -268,103 +134,8 @@ main :: proc() {
 
 	font_renderer := gpu_text.text_renderer_create(ctx);
 	defer gpu_text.destroy_text_renderer(ctx, &font_renderer);
-
-	rect_buffer := gpu.gpu_create_buffer(
-		ctx, 
-		1 << 20,
-		vk.BufferUsageFlags{.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		.Auto,
-		"buffer rect"
-	);
-	defer gpu.gpu_destroy_buffer(ctx, &rect_buffer);
-
-	uniform_buffers := [2]gpu.Gpu_Buffer{
-		gpu.gpu_create_buffer(ctx, size_of(window_data), {.UNIFORM_BUFFER}),
-		gpu.gpu_create_buffer(ctx, size_of(window_data), {.UNIFORM_BUFFER})
-	}
-
-	defer gpu.gpu_destroy_buffer(ctx, &uniform_buffers[0])
-	defer gpu.gpu_destroy_buffer(ctx, &uniform_buffers[1])
-
-	gpu.gpu_bindless_write_uniform(
-		ctx,
-		0,
-		uniform_buffers[0].buffer,
-		0,
-		size_of(window_data),
-	)
-	gpu.gpu_bindless_write_uniform(
-		ctx,
-		1,
-		uniform_buffers[1].buffer,
-		0,
-		size_of(window_data),
-	)
-
-	rect_descriptor := gpu.gpu_pipeline_desc_default_2d();
-	rect_descriptor.VertShaderPath = "../shaders/graph_charts.vert.spv"; 
-	rect_descriptor.FragShaderPath = "../shaders/graph_charts.frag.spv"; 
-	rect_descriptor.VertShaderCode = #load("../shaders/graph_charts.vert.spv"); 
-	rect_descriptor.FragShaderCode = #load("../shaders/graph_charts.frag.spv"); 
-	rect_descriptor.VertexAttributes = []vk.VertexInputAttributeDescription{
-		vk.VertexInputAttributeDescription{
-			location = 0, 
-			binding  = 0,
-			format   = .R32G32_SFLOAT,
-			offset   = 0,
-		},
-		vk.VertexInputAttributeDescription{
-			location = 1, 
-			binding  = 0,
-			format   = .R32G32_SFLOAT,
-			offset   = 2 * size_of(f32),
-		},
-		vk.VertexInputAttributeDescription{
-			location = 2, 
-			binding  = 0,
-			format   = .R32G32B32A32_SFLOAT,
-			offset   = 4 * size_of(f32),
-		},
-	};
-	rect_descriptor.VertexBindings = []vk.VertexInputBindingDescription {
-		vk.VertexInputBindingDescription {
-			binding = 0,
-			stride  = 8 * size_of(f32),
-			inputRate = .VERTEX
-		}
-	}
-	window_index_range := [1]vk.PushConstantRange{{
-		stageFlags = {.VERTEX},
-		offset     = 0,
-		size       = size_of(u32),
-	}}
-	rect_descriptor.PushConstants = window_index_range[:]
-
-	rect_pipeline := gpu.gpu_create_graphics_pipeline(ctx, rect_descriptor);
-	defer gpu.gpu_destroy_pipeline(ctx, &rect_pipeline);
-
-	// rect 2d pipeline
-	rect_2d_pipeline := RectVert2D_create_pipeline(ctx)
-	defer gpu.gpu_destroy_pipeline(ctx, &rect_2d_pipeline)
-
-	rect_2d_buffer := [2]gpu.Gpu_Buffer { 
-		gpu.gpu_create_buffer(
-			ctx, 
-			1 << 20,
-			vk.BufferUsageFlags{.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS},
-			.Auto,
-			"buffer 2d rect"
-		),
-		gpu.gpu_create_buffer(
-			ctx, 
-			1 << 20,
-			vk.BufferUsageFlags{.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS},
-			.Auto,
-			"buffer 2d rect"
-		),
-	}
-	defer gpu.gpu_destroy_buffer(ctx, &rect_2d_buffer[0])
-	defer gpu.gpu_destroy_buffer(ctx, &rect_2d_buffer[1])
+	ui_renderer := app.ui_renderer_create(ctx)
+	defer app.ui_renderer_destroy(ctx, &ui_renderer)
 
 	// microui init
 	// 
@@ -372,8 +143,6 @@ main :: proc() {
 	mui.init(ui_ctx)
 	ui_ctx.text_width  = ui_get_text_width 
 	ui_ctx.text_height = ui_get_text_height
-
-	//rect_descriptor := gpu.gpu_bindless_set(ctx);
 
 	roboto_mono_id, ok := gpu_text.text_renderer_register_font(
 		&font_renderer,
@@ -585,6 +354,30 @@ main :: proc() {
 
 		mui.end(ui_ctx)
 
+		// Populate missing atlas glyphs before beginning dynamic rendering.
+		{
+			current_command: ^mui.Command
+			for variant in mui.next_command_iterator(ui_ctx, &current_command) {
+				#partial switch cmd in variant {
+				case ^mui.Command_Text:
+					_font := cast(^UI_Font)cmd.font
+					_ = gpu_text.text_renderer_prepare(
+						&font_renderer,
+						cmd.str,
+						_font.size,
+						_font.font_id,
+					)
+				case ^mui.Command_Icon:
+					codepoint := ui_icon_codepoint(cmd.id)
+					if codepoint != 0 {
+						_ = gpu_text.text_renderer_prepare_icon(&font_renderer, codepoint, ui_font_icon.size)
+					}
+				case:
+				}
+			}
+		}
+		gpu_text.text_renderer_upload(ctx, &font_renderer)
+
 		frame, frame_err := gpu.gpu_begin_frame(ctx)
 		if !gpu.gpu_error_is_ok(frame_err) {
 			continue
@@ -595,66 +388,46 @@ main :: proc() {
 			color = {0.02, 0.025, 0.04, 1.0},
 		})
 
-		screen := window_data {
-			screen_width  = cast(f32)frame.extent.width,
-			screen_height = cast(f32)frame.extent.height
-		}
-
-		elapsed := cast(f32)time.duration_milliseconds(time.tick_since(start_time)) / 1000.0
-		viewport := vk.Viewport{
-			x        = 0,
-			y        = 0,
-			width    = f32(frame.extent.width),
-			height   = f32(frame.extent.height),
-			minDepth = 0,
-			maxDepth = 1,
-		}
 		current_scissor := vk.Rect2D{
 			offset = {0, 0},
 			extent = frame.extent,
 		}
-		vk.CmdSetViewport(frame.cmd, 0, 1, &viewport)
-		vk.CmdSetScissor(frame.cmd, 0, 1, &current_scissor)
-		rect_buffer_offset: u64 = 0
+		app.ui_renderer_begin(&ui_renderer)
 
 		{
 			current_command: ^mui.Command
 			for variant in mui.next_command_iterator(ui_ctx, &current_command) {
 				switch cmd in variant {
 				case ^mui.Command_Text:
-					pos := [2]i32{cmd.pos.x, cmd.pos.y}
 					_font := cast(^UI_Font)cmd.font
-					font_id := _font.font_id;
 					color : [4]f32 = {
 						cast(f32)cmd.color.r / 255,
 						cast(f32)cmd.color.g / 255,
 						cast(f32)cmd.color.b / 255,
 						cast(f32)cmd.color.a / 255
 					}
-					ok = gpu_text.text_renderer_prepare(
-						&font_renderer,
-						cmd.str,
-						_font.size,
-						font_id
-					);
-					gpu_text.text_renderer_upload(ctx, &font_renderer)
 					baseline_y := f32(cmd.pos.y) + gpu_text.text_baseline_offset_for_font(
-					    &font_renderer,
-					    font_id,
-					    _font.size,
-					)
-					gpu_text.draw_text_colored_font(
-						ctx,
 						&font_renderer,
-						frame.cmd,
-						cmd.str,
-						cast(f32)pos.x, baseline_y,
+						_font.font_id,
 						_font.size,
-						font_id,
+					)
+					clip_rect := [4]f32{
+						f32(current_scissor.offset.x),
+						f32(current_scissor.offset.y),
+						f32(current_scissor.offset.x) + f32(current_scissor.extent.width),
+						f32(current_scissor.offset.y) + f32(current_scissor.extent.height),
+					}
+					app.ui_renderer_push_text(
+						&ui_renderer,
+						&font_renderer,
+						cmd.str,
+						f32(cmd.pos.x),
+						baseline_y,
+						_font.size,
+						_font.font_id,
 						color,
-						current_scissor,
-						frame.extent
-					);
+						clip_rect,
+					)
 				case ^mui.Command_Rect:
 					color : [4]f32 = {
 						cast(f32)cmd.color.r / 255,
@@ -662,22 +435,22 @@ main :: proc() {
 						cast(f32)cmd.color.b / 255,
 						cast(f32)cmd.color.a / 255
 					}
-					rect := RectVert2D {
-						top_left = {cast(f32)cmd.rect.x, cast(f32)cmd.rect.y},
-						bottom_right = {cast(f32)cmd.rect.x + cast(f32)cmd.rect.w, cast(f32)cmd.rect.y + cast(f32)cmd.rect.h},
-						color_top = color,
-						color_bottom = {color.r - 0.02, color.g - 0.02, color.b - 0.02, color.a},
-						radius = 8,
-						edge   = 0,
-					} 
-					gpu.gpu_upload_buffer(ctx, &rect_2d_buffer[frame.frame_slot], &rect, size_of(RectVert2D), rect_buffer_offset);
-					gpu.gpu_bind_pipeline(ctx, frame.cmd, &rect_2d_pipeline);
-					gpu.gpu_push_constants(ctx, frame.cmd, &rect_2d_pipeline, {.VERTEX}, &screen, size_of(window_data), 0)
-					offset := vk.DeviceSize(rect_buffer_offset)
-					vk.CmdBindVertexBuffers(frame.cmd, 0, 1, &rect_2d_buffer[frame.frame_slot].buffer, &offset)
-					vk.CmdDraw(frame.cmd, 6, 1, 0, 0);
-					rect_buffer_offset += size_of(RectVert2D)
-
+					clip_rect := [4]f32{
+						f32(current_scissor.offset.x),
+						f32(current_scissor.offset.y),
+						f32(current_scissor.offset.x) + f32(current_scissor.extent.width),
+						f32(current_scissor.offset.y) + f32(current_scissor.extent.height),
+					}
+					app.ui_renderer_push_rect(
+						&ui_renderer,
+						{f32(cmd.rect.x), f32(cmd.rect.y)},
+						{f32(cmd.rect.x + cmd.rect.w), f32(cmd.rect.y + cmd.rect.h)},
+						color,
+						{color.r - 0.02, color.g - 0.02, color.b - 0.02, color.a},
+						8,
+						0,
+						clip_rect,
+					)
 				case ^mui.Command_Icon:
 					codepoint := ui_icon_codepoint(cmd.id)
 					if codepoint != 0 {
@@ -687,10 +460,15 @@ main :: proc() {
 							f32(cmd.color.b) / 255,
 							f32(cmd.color.a) / 255,
 						}
-						gpu_text.draw_icon_codepoint(
-							ctx,
+						clip_rect := [4]f32{
+							f32(current_scissor.offset.x),
+							f32(current_scissor.offset.y),
+							f32(current_scissor.offset.x) + f32(current_scissor.extent.width),
+							f32(current_scissor.offset.y) + f32(current_scissor.extent.height),
+						}
+						app.ui_renderer_push_icon(
+							&ui_renderer,
 							&font_renderer,
-							frame.cmd,
 							codepoint,
 							f32(cmd.rect.x),
 							f32(cmd.rect.y),
@@ -698,8 +476,7 @@ main :: proc() {
 							f32(cmd.rect.h),
 							ui_font_icon.size,
 							color,
-							current_scissor,
-							frame.extent,
+							clip_rect,
 						)
 					}
 				case ^mui.Command_Clip:
@@ -713,12 +490,12 @@ main :: proc() {
 						offset = {x0, y0},
 						extent = {u32(x1 - x0), u32(y1 - y0)},
 					}
-					vk.CmdSetScissor(frame.cmd, 0, 1, &current_scissor)
 				case ^mui.Command_Jump: 
 					unreachable()
 				}
 			}
 		}
+		app.ui_renderer_draw(ctx, &ui_renderer, frame.cmd, frame.extent)
 
 		gpu.gpu_end_swapchain_rendering(ctx, frame)
 		_ = gpu.gpu_end_frame(ctx, frame)

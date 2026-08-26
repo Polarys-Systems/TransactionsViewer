@@ -11,8 +11,6 @@ SHADERS=(
     "glass_compose.frag"
     "prof_overlay.frag"
     "prof_overlay.vert"
-    "text.frag"
-    "text.vert"
     "ui_glass.frag"
     "ui_panel.frag"
     "ui_panel.vert"

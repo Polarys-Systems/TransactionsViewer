@@ -3,6 +3,7 @@ package profiler
 import "core:fmt"
 import "core:math"
 
+import app "../app"
 import gpu "../gpu"
 import gpu_text "../gpu_text"
 import vk "vendor:vulkan"
@@ -16,7 +17,7 @@ Example:
 
 	update_prof_overlay_data(&overlay)
 	render_prof_overlay(&ctx, &overlay, cmd)
-	render_prof_overlay_text(&ctx, &overlay, &Text_Renderer, cmd)
+	render_prof_overlay_text(&ctx, &overlay, &ui_renderer, &Text_Renderer)
 */
 
 PROF_OVERLAY_MAX_VERTICES :: 65536
@@ -331,7 +332,39 @@ render_prof_overlay :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, cmd: 
 	gpu.gpu_draw_vertices(cmd, overlay.VertexBuffer)
 }
 
-render_prof_overlay_text :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, text: ^gpu_text.Text_Renderer, cmd: vk.CommandBuffer) {
+prof_overlay_push_text :: proc(
+	ui: ^app.UI_Renderer,
+	text_renderer: ^gpu_text.Text_Renderer,
+	text: string,
+	x, y, size: f32,
+	color: [4]f32,
+	scissor: vk.Rect2D,
+) {
+	clip_rect := [4]f32{
+		f32(scissor.offset.x),
+		f32(scissor.offset.y),
+		f32(scissor.offset.x) + f32(scissor.extent.width),
+		f32(scissor.offset.y) + f32(scissor.extent.height),
+	}
+	app.ui_renderer_push_text(
+		ui,
+		text_renderer,
+		text,
+		x,
+		y,
+		size,
+		text_renderer.DefaultFont,
+		color,
+		clip_rect,
+	)
+}
+
+render_prof_overlay_text :: proc(
+	ctx: ^gpu.Gpu_Context,
+	overlay: ^Prof_Overlay,
+	ui: ^app.UI_Renderer,
+	text: ^gpu_text.Text_Renderer,
+) {
 	if !overlay.Enabled {
 		return
 	}
@@ -344,7 +377,7 @@ render_prof_overlay_text :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, 
 	warn := [4]f32{0.95, 0.76, 0.22, 1.0}
 	ok := [4]f32{0.55, 0.92, 0.18, 1.0}
 
-	gpu_text.draw_text_colored(ctx, text, cmd, "Profiler (F1)", layout.left_x + 12, layout.left_y + 7, 18, white, full_scissor)
+	prof_overlay_push_text(ui, text, "Profiler (F1)", layout.left_x + 12, layout.left_y + 7, 18, white, full_scissor)
 
 	frame_ms := f64(overlay.FrameSummary.duration_ns) / 1_000_000.0
 	budget_color := ok
@@ -355,10 +388,10 @@ render_prof_overlay_text :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, 
 		budget_color = hot
 	}
 	summary := fmt.tprintf("%.3f ms  scopes %d  max depth %d", frame_ms, overlay.FrameSummary.scope_count, overlay.FrameSummary.max_depth)
-	gpu_text.draw_text_colored(ctx, text, cmd, summary, layout.left_x + 12, layout.left_y + 42, 15, budget_color, full_scissor)
+	prof_overlay_push_text(ui, text, summary, layout.left_x + 12, layout.left_y + 42, 15, budget_color, full_scissor)
 
 	header_line := "Zone                    Exc%      Exc     Inc%      Inc   Count"
-	gpu_text.draw_text_colored(ctx, text, cmd, header_line, layout.left_x + 12, layout.left_y + 70, 13, muted, full_scissor)
+	prof_overlay_push_text(ui, text, header_line, layout.left_x + 12, layout.left_y + 70, 13, muted, full_scissor)
 
 	max_rows := int((layout.left_h - 96) / 18.0)
 	if max_rows > 28 {
@@ -385,12 +418,12 @@ render_prof_overlay_text :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, 
 			prof_overlay_format_duration(st.inclusive_ns),
 			st.count,
 		)
-		gpu_text.draw_text_colored(ctx, text, cmd, line, layout.left_x + 12, layout.left_y + 92 + f32(i) * 18, 13, st.color, full_scissor)
+		prof_overlay_push_text(ui, text, line, layout.left_x + 12, layout.left_y + 92 + f32(i) * 18, 13, st.color, full_scissor)
 	}
 
-	gpu_text.draw_text_colored(ctx, text, cmd, "Timeline", layout.timeline_x + 12, layout.left_y + 7, 18, white, full_scissor)
+	prof_overlay_push_text(ui, text, "Timeline", layout.timeline_x + 12, layout.left_y + 7, 18, white, full_scissor)
 	if len(overlay.FrameBars) == 0 {
-		gpu_text.draw_text_colored(ctx, text, cmd, "Waiting for a completed Render loop sample...", layout.timeline_x + 12, layout.timeline_y + 12, 15, muted, full_scissor)
+		prof_overlay_push_text(ui, text, "Waiting for a completed Render loop sample...", layout.timeline_x + 12, layout.timeline_y + 12, 15, muted, full_scissor)
 	} else {
 		min_start, max_end := prof_overlay_frame_range(overlay.FrameBars[:])
 		total_ns := max_end - min_start
@@ -399,7 +432,7 @@ render_prof_overlay_text :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, 
 				x := layout.timeline_x + layout.timeline_w * f32(i) / 10.0
 				t_ms := f64(total_ns) * f64(i) / 10.0 / 1_000_000.0
 				label := fmt.tprintf("%.2fms", t_ms)
-				gpu_text.draw_text_colored(ctx, text, cmd, label, x + 3, layout.timeline_y - 18, 11, muted, full_scissor)
+				prof_overlay_push_text(ui, text, label, x + 3, layout.timeline_y - 18, 11, muted, full_scissor)
 			}
 
 			label_count := 0
@@ -418,7 +451,7 @@ render_prof_overlay_text :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, 
 				}
 				name := prof_overlay_short_name(b.name, int((x1 - x0) / 8.0))
 				label := fmt.tprintf("%s %s", name, prof_overlay_format_duration(b.duration))
-				gpu_text.draw_text_colored(ctx, text, cmd, label, x0 + 4, row_y + 6, 12, white, full_scissor)
+				prof_overlay_push_text(ui, text, label, x0 + 4, row_y + 6, 12, white, full_scissor)
 				label_count += 1
 			}
 		}
@@ -430,8 +463,8 @@ render_prof_overlay_text :: proc(ctx: ^gpu.Gpu_Context, overlay: ^Prof_Overlay, 
 		last := prof_overlay_history_at(overlay, overlay.FrameHistoryCount - 1)
 		history_label = fmt.tprintf("Frame History   last %.2f ms   avg %.2f ms", last, avg)
 	}
-	gpu_text.draw_text_colored(ctx, text, cmd, history_label, layout.plot_x + 12, layout.plot_y + 6, 15, white, full_scissor)
-	gpu_text.draw_text_colored(ctx, text, cmd, "16.67 ms", layout.plot_x + 10, layout.plot_y + layout.plot_h - 36, 11, muted, full_scissor)
+	prof_overlay_push_text(ui, text, history_label, layout.plot_x + 12, layout.plot_y + 6, 15, white, full_scissor)
+	prof_overlay_push_text(ui, text, "16.67 ms", layout.plot_x + 10, layout.plot_y + layout.plot_h - 36, 11, muted, full_scissor)
 }
 
 prof_overlay_commit_frame :: proc(overlay: ^Prof_Overlay) {
