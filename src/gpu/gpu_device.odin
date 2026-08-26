@@ -680,6 +680,13 @@ get_layout_transition_barriers :: proc(oldLayout, newLayout: vk.ImageLayout) -> 
 			dstStageMask  = {.FRAGMENT_SHADER},
 			dstAccessMask = {.SHADER_READ},
 		}
+	case oldLayout == .SHADER_READ_ONLY_OPTIMAL && newLayout == .TRANSFER_DST_OPTIMAL:
+		b = {
+			srcStageMask  = {.FRAGMENT_SHADER},
+			srcAccessMask = {.SHADER_READ},
+			dstStageMask  = {.TRANSFER},
+			dstAccessMask = {.TRANSFER_WRITE},
+		}
 	case oldLayout == .UNDEFINED && newLayout == .COLOR_ATTACHMENT_OPTIMAL:
 		b = {
 			srcStageMask  = {.TOP_OF_PIPE},

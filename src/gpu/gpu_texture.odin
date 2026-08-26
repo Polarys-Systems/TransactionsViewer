@@ -296,6 +296,17 @@ gpu_write_sampled_texture_descriptor :: proc(ctx: ^Gpu_Context, handle: Gpu_Text
 	gpu_bindless_write_texture(ctx, slot.tex.descriptor_index, slot.tex.view)
 }
 
+// Creates a sampled texture in UNDEFINED layout. The caller must enqueue and
+// record an upload before sampling it.
+gpu_create_texture_deferred :: proc(ctx: ^Gpu_Context, desc: Gpu_Texture_Desc) -> Gpu_Texture_Handle {
+	handle := gpu_create_image(ctx, gpu_image_desc_from_texture_desc(desc))
+	if _, _, ok := gpu_texture_slot(ctx, handle); !ok {
+		return Gpu_Texture_Handle(0)
+	}
+	gpu_write_sampled_texture_descriptor(ctx, handle)
+	return handle
+}
+
 gpu_create_texture :: proc(ctx: ^Gpu_Context, desc: Gpu_Texture_Desc, data: []u8 = nil) -> Gpu_Texture_Handle {
 	handle := gpu_create_image(ctx, gpu_image_desc_from_texture_desc(desc))
 	slot, _, ok := gpu_texture_slot(ctx, handle)
@@ -340,11 +351,12 @@ gpu_update_texture :: proc(ctx: ^Gpu_Context, handle: Gpu_Texture_Handle, region
 	}
 
 	gpu_upload_enqueue_texture_copy(ctx, handle, Gpu_Image_Upload_Desc{
-		region            = update_region,
-		final_layout      = .SHADER_READ_ONLY_OPTIMAL,
-		update_descriptor = true,
+		region       = update_region,
+		final_layout = .SHADER_READ_ONLY_OPTIMAL,
 	}, data)
-	gpu_upload_flush(ctx)
+	if !ctx.upload.in_frame {
+		gpu_upload_flush(ctx)
+	}
 }
 
 gpu_texture_descriptor_index :: proc(ctx: ^Gpu_Context, handle: Gpu_Texture_Handle) -> (u32, bool) {

@@ -38,6 +38,22 @@ UiAlignments :: bit_set[UiAlignment;u8]
 
 // --------------------------------------------------------------- //
 
+UiAction :: enum {
+	NONE, 
+	HOVERABLE,
+	CLICKABLE,
+	RIGHT_CLICKABLE,
+	SCROLLABLE,
+	RESIZABLE,
+	CLOSABLE,
+	NO_CLIPPING,
+	EDITABLE,
+}
+
+UiActions :: bit_set[UiAction;u16]
+
+// --------------------------------------------------------------- //
+
 UiIcon :: enum {
 	NONE,
 	CHECK,
@@ -92,10 +108,13 @@ default_style :: UiStyle {
 // --------------------------------------------------------------- //
 
 UiBox :: struct {
+	zindex        : i32,
 	rect          : Rect2d,
 	boundary_rect : Rect2d,
+	scroll_offset : [2]f32,
 	text          : strings.Builder,
-	style         : UiStyle
+	style         : UiStyle,
+	childs        : ^[MAX_BOXES]UiBox,
 }
 
 // --------------------------------------------------------------- //
@@ -103,9 +122,11 @@ UiBox :: struct {
 UiLayout :: struct {
 	rect      : Rect2d,
 	content   : Rect2d,
-	box_size  : [2]f32,
 	margin    : f32,
 	alignment : UiAlignments,
+	box_size  : [2]f32,
+	scrollable_content : [2]f32,
+	column_width : f32,
 }
 
 // --------------------------------------------------------------- //
@@ -129,13 +150,11 @@ UiContext :: struct {
 	mouse_pos     : [2]f32,
 
 	windows       : [MAX_WINDOWS]UiBox,
-	boxes         : [MAX_BOXES]UiBox,
 	pop_out_boxes : [MAX_BOXES]UiBox,
 	menu          : [MAX_MENU_BOXES]UiBox,
 	command_bar   : [MAX_COMMANDS]UiBox,
 
 	n_windows       : i32,
-	n_boxes         : i32,
 	n_pop_out_boxes : i32,
 	n_menu_boxes    : i32,
 	n_commands      : i32,
@@ -177,7 +196,6 @@ begin :: proc(self : ^UiContext, window_w, window_h : f32) {
 	self.screen.width    = window_w
 	self.screen.height   = window_h
 	self.n_windows       = -1
-	self.n_boxes         = -1
 	self.n_pop_out_boxes = -1
 	self.n_menu_boxes    = -1
 	self.n_commands      = -1
@@ -216,7 +234,7 @@ end_window :: proc(self : ^UiContext, close : bool) {
 
 // --------------------------------------------------------------- //
 
-new_box :: proc(self : ^UiContext, str : string, alignment : UiAlignments, rect : Rect2d) {
+new_box :: proc(self : ^UiContext, str : string, alignment : UiAlignments, actions : UiActions, rect : Rect2d) {
 	
 }
 
@@ -358,4 +376,28 @@ layout_push_alignment :: proc(self: ^UiContext, alignments : UiAlignments) {
 	assert(self.n_layouts >= 0)
 	
 	self.layouts[self.n_layouts].alignment = alignments
+}
+
+// --------------------------------------------------------------- //
+
+layout_begin_scroll :: proc(self : ^UiContext, auto_h_scroll := true) {
+
+}
+
+// --------------------------------------------------------------- //
+
+layout_end_scroll :: proc(self : ^UiContext, auto_h_scroll := true) {
+
+}
+
+// --------------------------------------------------------------- //
+
+layout_row :: proc(self : ^UiContext, n_columns := 1) {
+	assert(self.n_layouts >= 0 && self.n_layouts < MAX_LAYOUT)
+	n_layouts := self.n_layouts
+
+	self.layouts[n_layouts].column_width = self.layouts[n_layouts].rect.width / auto_cast n_columns
+	self.layouts[n_layouts].content.x    = self.layouts[n_layouts].rect.x
+
+	self.layouts[n_layouts].content.y -= self.layouts[n_layouts].box_size.y
 }

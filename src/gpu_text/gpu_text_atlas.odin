@@ -1,7 +1,5 @@
 package gpu_text
 
-// Glyph atlas paging, rasterization, and upload tracking.
-
 import "base:runtime"
 import "core:fmt"
 import "core:math"
@@ -11,23 +9,28 @@ import gpu "../gpu"
 
 atlas_page_width  :: 2048
 atlas_page_height :: 2048
-atlas_oversample  :: 1
+atlas_padding     :: 1
 max_atlas_pages   :: 16
 atlas_size_quantization :: f32(64.0)
 
-// ------------------------------------------------------------------
-
-Atlas_Glyph :: struct {
-	page_index: int,
-	x0, y0, x1, y1: i32,
-	u0, v0, u1, v1: f32,
-	xoff, yoff:     f32,
-	xoff2, yoff2:   f32,
-	advance_x:      f32,
-	advance_y:      f32,
+Atlas_Glyph_State :: enum u8 {
+	Metrics,
+	Resident,
+	Bitmapless,
+	Failed,
 }
 
-// ------------------------------------------------------------------
+Atlas_Glyph :: struct {
+	state:             Atlas_Glyph_State,
+	page_index:        int,
+	texture_index:     u32,
+	x0, y0, x1, y1:   i32,
+	u0, v0, u1, v1:   f32,
+	xoff, yoff:        f32,
+	xoff2, yoff2:      f32,
+	advance_x:         f32,
+	advance_y:         f32,
+}
 
 Shelf_Packer :: struct {
 	x, y:       i32,
@@ -35,26 +38,24 @@ Shelf_Packer :: struct {
 }
 
 pack_glyph :: proc(p: ^Shelf_Packer, w, h, atlas_w, atlas_h: i32) -> (x, y: i32, ok: bool) {
-	if w > atlas_w || h > atlas_h {
+	if p == nil || w <= 0 || h <= 0 || w > atlas_w || h > atlas_h {
 		return 0, 0, false
 	}
-	if p.x + w > atlas_w {
-		p.x = 0
-		p.y += p.row_height + 1
-		p.row_height = 0
+	next := p^
+	if next.x + w > atlas_w {
+		next.x = 0
+		next.y += next.row_height
+		next.row_height = 0
 	}
-	if p.y + h > atlas_h {
+	if next.y + h > atlas_h {
 		return 0, 0, false
 	}
-	x, y = p.x, p.y
-	p.x += w + 1
-	if h > p.row_height {
-		p.row_height = h
-	}
+	x, y = next.x, next.y
+	next.x += w
+	next.row_height = max(next.row_height, h)
+	p^ = next
 	return x, y, true
 }
-
-// ------------------------------------------------------------------
 
 Atlas_Page :: struct {
 	texture:       gpu.Gpu_Texture_Handle,
@@ -62,14 +63,10 @@ Atlas_Page :: struct {
 	packer:        Shelf_Packer,
 }
 
-// ------------------------------------------------------------------
-
 Font_Entry :: struct {
 	id:   u32,
 	face: fontlib.Face,
 }
-
-// ------------------------------------------------------------------
 
 Glyph_Key :: struct {
 	font_id:  u32,
@@ -82,276 +79,248 @@ Font_Size_Key :: struct {
 	size_64: u32,
 }
 
-// ------------------------------------------------------------------
-
 Atlas_Manager :: struct {
-	ctx:               ^gpu.Gpu_Context,
-	pages:             [dynamic]Atlas_Page,
-	fonts:             [dynamic]Font_Entry,
-	cache:             map[Glyph_Key]Atlas_Glyph,
+	ctx:                ^gpu.Gpu_Context,
+	pages:              [dynamic]Atlas_Page,
+	fonts:              [dynamic]Font_Entry,
+	glyphs:             map[Glyph_Key]Atlas_Glyph,
 	line_metrics_cache: map[Font_Size_Key]fontlib.Line_Metrics,
-	next_font_id:      u32,
-	pending_uploads:   bool,
-	allocator:         runtime.Allocator,
+	next_font_id:       u32,
+	allocator:          runtime.Allocator,
 }
 
-// ------------------------------------------------------------------
-
-create_atlas_manager :: proc(
-	ctx: ^gpu.Gpu_Context,
-	allocator := context.allocator,
-) -> ^Atlas_Manager {
+create_atlas_manager :: proc(ctx: ^gpu.Gpu_Context, allocator := context.allocator) -> ^Atlas_Manager {
 	manager := new(Atlas_Manager, allocator)
 	manager.ctx = ctx
 	manager.allocator = allocator
 	manager.pages = make([dynamic]Atlas_Page, allocator)
 	manager.fonts = make([dynamic]Font_Entry, allocator)
-	manager.cache = make(map[Glyph_Key]Atlas_Glyph, 1024, allocator)
+	manager.glyphs = make(map[Glyph_Key]Atlas_Glyph, 1024, allocator)
 	manager.line_metrics_cache = make(map[Font_Size_Key]fontlib.Line_Metrics, 128, allocator)
 	return manager
 }
-
-// ------------------------------------------------------------------
 
 destroy_atlas_manager :: proc(manager: ^Atlas_Manager) {
 	if manager == nil {
 		return
 	}
-
 	for &page in manager.pages {
 		gpu.gpu_destroy_texture(manager.ctx, page.texture)
 	}
-	delete(manager.pages)
-
 	for &font in manager.fonts {
 		fontlib.face_destroy(&font.face, manager.allocator)
 	}
+	delete(manager.pages)
 	delete(manager.fonts)
-
-	delete(manager.cache)
+	delete(manager.glyphs)
 	delete(manager.line_metrics_cache)
-
 	free(manager, manager.allocator)
 }
 
-// ------------------------------------------------------------------
-
 atlas_manager_register_font :: proc(manager: ^Atlas_Manager, font_data: []byte) -> (u32, bool) {
-	font: Font_Entry
-	font.id = manager.next_font_id
-	face, ok := fontlib.face_load_from_data(font.id, font_data, "", manager.allocator)
+	if manager == nil || len(font_data) == 0 {
+		return 0, false
+	}
+	font_id := manager.next_font_id
+	face, ok := fontlib.face_load_from_data(font_id, font_data, "", manager.allocator)
 	if !ok {
 		return 0, false
 	}
-	font.face = face
-
-	append(&manager.fonts, font)
+	append(&manager.fonts, Font_Entry{id = font_id, face = face})
 	manager.next_font_id += 1
-	return font.id, true
+	return font_id, true
 }
-
-// ------------------------------------------------------------------
-
-atlas_manager_unregister_last_font :: proc(manager: ^Atlas_Manager, font_id: u32) -> bool {
-	if manager == nil || len(manager.fonts) == 0 {
-		return false
-	}
-	if manager.next_font_id == 0 || font_id+1 != manager.next_font_id {
-		return false
-	}
-
-	last_idx := len(manager.fonts) - 1
-	last_font := manager.fonts[last_idx]
-	if last_font.id != font_id {
-		return false
-	}
-
-	removed := pop(&manager.fonts)
-	fontlib.face_destroy(&removed.face, manager.allocator)
-	manager.next_font_id -= 1
-	return true
-}
-
-// ------------------------------------------------------------------
 
 atlas_quantize_size_64 :: proc(size: f32) -> u32 {
 	quantized := i32(math.round(f64(size * atlas_size_quantization)))
-	if quantized < 1 {
-		quantized = 1
-	}
-	return u32(quantized)
+	return u32(max(quantized, 1))
 }
 
 atlas_size_from_quantized_64 :: proc(size_64: u32) -> f32 {
 	return f32(size_64) / atlas_size_quantization
 }
 
-// ------------------------------------------------------------------
-
-rasterize_glyph :: proc(font: ^Font_Entry, size: f32, glyph_id: u16) -> (
-	bitmap: []byte,
-	bw, bh: i32,
-	xoff, yoff: f32,
-	advance_x, advance_y: f32,
-	ok: bool,
-) {
-	glyph, rasterized := fontlib.rasterize_glyph(&font.face, size, i32(glyph_id), context.temp_allocator)
-	if !rasterized {
-		return nil, 0, 0, 0, 0, 0, 0, false
-	}
-	return glyph.pixels, glyph.width, glyph.height, glyph.xoff, glyph.yoff, glyph.advance_x, glyph.advance_y, true
-}
-
-// ------------------------------------------------------------------
-
-create_atlas_page :: proc(manager: ^Atlas_Manager) -> (int, bool) {
-	if len(manager.pages) >= max_atlas_pages {
-		return 0, false
-	}
-
-	page: Atlas_Page
-	zero_pixels := make([]u8, atlas_page_width * atlas_page_height, context.temp_allocator)
-	page.texture = gpu.gpu_create_texture(
-		manager.ctx,
-		gpu.Gpu_Texture_Desc{
-			width  = u32(atlas_page_width),
-			height = u32(atlas_page_height),
-			format = .R8_UNORM,
-			usage  = {.SAMPLED},
-		},
-		zero_pixels,
-	)
-	page_tex_idx, ok := gpu.gpu_texture_descriptor_index(manager.ctx, page.texture)
-	if !ok {
-		gpu.gpu_destroy_texture(manager.ctx, page.texture)
-		return 0, false
-	}
-	page.texture_index = page_tex_idx
-
-	append(&manager.pages, page)
-	return len(manager.pages) - 1, true
-}
-
-// ------------------------------------------------------------------
-
-enqueue_glyph_upload :: proc(
-	manager: ^Atlas_Manager, page_idx: int, bitmap: []byte,
-	bw, bh, ax, ay: i32, xoff, yoff, advance_x, advance_y: f32, key: Glyph_Key,
-) -> (Atlas_Glyph, bool) {
-	if page_idx < 0 || page_idx >= len(manager.pages) {
-		return {}, false
-	}
-
-	page := &manager.pages[page_idx]
-	gpu.gpu_upload_enqueue_texture_copy(
-		manager.ctx,
-		page.texture,
-		gpu.Gpu_Image_Upload_Desc{
-			region = gpu.Gpu_Texture_Update_Region{
-				x      = u32(ax),
-				y      = u32(ay),
-				width  = u32(bw),
-				height = u32(bh),
-			},
-			final_layout = .SHADER_READ_ONLY_OPTIMAL,
-			update_descriptor = true,
-		},
-		bitmap,
-	)
-	manager.pending_uploads = true
-
-	glyph := Atlas_Glyph{
-		page_index = page_idx,
-		x0 = ax,
-		y0 = ay,
-		x1 = ax + bw,
-		y1 = ay + bh,
-		u0 = f32(ax) / f32(atlas_page_width),
-		v0 = f32(ay) / f32(atlas_page_height),
-		u1 = f32(ax + bw) / f32(atlas_page_width),
-		v1 = f32(ay + bh) / f32(atlas_page_height),
-		xoff = xoff,
-		yoff = yoff,
-		xoff2 = xoff + f32(bw) / f32(atlas_oversample),
-		yoff2 = yoff + f32(bh) / f32(atlas_oversample),
-		advance_x = advance_x,
-		advance_y = advance_y,
-	}
-	manager.cache[key] = glyph
-	return glyph, true
-}
-
-atlas_manager_get_line_metrics :: proc(manager: ^Atlas_Manager, font_id: u32, size: f32) -> fontlib.Line_Metrics {
+atlas_manager_get_line_metrics :: proc(
+	manager: ^Atlas_Manager,
+	font_id, size_64: u32,
+) -> fontlib.Line_Metrics {
 	if manager == nil || int(font_id) >= len(manager.fonts) {
-		return fontlib.Line_Metrics{line_height = max(1.0, size), ascent = size * 0.8, descent = -size * 0.2}
+		size := atlas_size_from_quantized_64(size_64)
+		return fontlib.Line_Metrics{
+			ascent = size * 0.8,
+			descent = -size * 0.2,
+			line_height = max(1.0, size),
+		}
 	}
-	size_64 := atlas_quantize_size_64(size)
 	key := Font_Size_Key{font_id = font_id, size_64 = size_64}
 	if metrics, ok := manager.line_metrics_cache[key]; ok {
 		return metrics
 	}
-	raster_size := atlas_size_from_quantized_64(size_64)
-	metrics := fontlib.line_metrics(&manager.fonts[font_id].face, raster_size)
+	metrics := fontlib.line_metrics(&manager.fonts[font_id].face, size_64)
 	manager.line_metrics_cache[key] = metrics
 	return metrics
 }
 
-atlas_manager_get_glyph :: proc(
+atlas_manager_get_glyph_metrics :: proc(
 	manager: ^Atlas_Manager,
-	font_id: u32,
-	size: f32,
+	font_id, size_64: u32,
 	glyph_id: u16,
 ) -> (Atlas_Glyph, bool) {
-	size_64 := atlas_quantize_size_64(size)
+	if manager == nil || int(font_id) >= len(manager.fonts) || glyph_id == 0 {
+		return {}, false
+	}
 	key := Glyph_Key{font_id = font_id, size_64 = size_64, glyph_id = glyph_id}
-	if glyph, ok := manager.cache[key]; ok {
-		return glyph, true
+	if glyph, ok := manager.glyphs[key]; ok {
+		return glyph, glyph.state != .Failed
 	}
-
-	if int(font_id) >= len(manager.fonts) {
-		fmt.printf("[WARN] AtlasManager: invalid font_id %d\n", font_id)
-		return {}, false
-	}
-	font := &manager.fonts[font_id]
-
-	raster_size := atlas_size_from_quantized_64(size_64)
-	bitmap, bw, bh, xoff, yoff, advance_x, advance_y, raster_ok := rasterize_glyph(font, raster_size, glyph_id)
-	if !raster_ok {
-		manager.cache[key] = {}
-		return {}, false
-	}
-	if bw <= 0 || bh <= 0 {
-		glyph := Atlas_Glyph{
-			page_index = -1,
-			advance_x = advance_x,
-			advance_y = advance_y,
-		}
-		manager.cache[key] = glyph
-		return glyph, true
-	}
-
-	// Try to pack into existing pages
-	for i in 0 ..< len(manager.pages) {
-		page := &manager.pages[i]
-		ax, ay, ok := pack_glyph(&page.packer, bw, bh, atlas_page_width, atlas_page_height)
-		if ok {
-			return enqueue_glyph_upload(manager, i, bitmap, bw, bh, ax, ay, xoff, yoff, advance_x, advance_y, key)
-		}
-	}
-
-	// Need a new page
-	page_idx, ok := create_atlas_page(manager)
+	advance_x, ok := fontlib.glyph_advance(&manager.fonts[font_id].face, i32(glyph_id), size_64)
 	if !ok {
-		fmt.println("[WARN] AtlasManager: failed to create new atlas page")
+		manager.glyphs[key] = Atlas_Glyph{state = .Failed, page_index = -1}
 		return {}, false
 	}
+	glyph := Atlas_Glyph{
+		state = .Metrics,
+		page_index = -1,
+		advance_x = advance_x,
+	}
+	manager.glyphs[key] = glyph
+	return glyph, true
+}
 
-	page := &manager.pages[page_idx]
-	ax, ay, packed := pack_glyph(&page.packer, bw, bh, atlas_page_width, atlas_page_height)
+create_atlas_page :: proc(manager: ^Atlas_Manager) -> (int, bool) {
+	if manager == nil || manager.ctx == nil || len(manager.pages) >= max_atlas_pages {
+		return 0, false
+	}
+	texture := gpu.gpu_create_texture_deferred(manager.ctx, gpu.Gpu_Texture_Desc{
+		width = atlas_page_width,
+		height = atlas_page_height,
+		format = .R8_UNORM,
+		usage = {.SAMPLED},
+	})
+	texture_index, ok := gpu.gpu_texture_descriptor_index(manager.ctx, texture)
+	if !ok {
+		gpu.gpu_destroy_texture(manager.ctx, texture)
+		return 0, false
+	}
+	append(&manager.pages, Atlas_Page{
+		texture = texture,
+		texture_index = texture_index,
+	})
+	return len(manager.pages) - 1, true
+}
+
+atlas_manager_pack :: proc(manager: ^Atlas_Manager, width, height: i32) -> (page, x, y: int, ok: bool) {
+	for i in 0..<len(manager.pages) {
+		ax, ay, packed := pack_glyph(
+			&manager.pages[i].packer,
+			width,
+			height,
+			atlas_page_width,
+			atlas_page_height,
+		)
+		if packed {
+			return i, int(ax), int(ay), true
+		}
+	}
+	page_index, created := create_atlas_page(manager)
+	if !created {
+		return 0, 0, 0, false
+	}
+	ax, ay, packed := pack_glyph(
+		&manager.pages[page_index].packer,
+		width,
+		height,
+		atlas_page_width,
+		atlas_page_height,
+	)
+	return page_index, int(ax), int(ay), packed
+}
+
+atlas_manager_get_glyph :: proc(
+	manager: ^Atlas_Manager,
+	font_id, size_64: u32,
+	glyph_id: u16,
+) -> (Atlas_Glyph, bool) {
+	metrics, ok := atlas_manager_get_glyph_metrics(manager, font_id, size_64, glyph_id)
+	if !ok {
+		return {}, false
+	}
+	if metrics.state == .Resident || metrics.state == .Bitmapless {
+		return metrics, true
+	}
+
+	key := Glyph_Key{font_id = font_id, size_64 = size_64, glyph_id = glyph_id}
+	bitmap, rasterized := fontlib.rasterize_glyph(
+		&manager.fonts[font_id].face,
+		size_64,
+		i32(glyph_id),
+		context.temp_allocator,
+	)
+	if !rasterized {
+		manager.glyphs[key] = Atlas_Glyph{state = .Failed, page_index = -1}
+		return {}, false
+	}
+	metrics.advance_x = bitmap.advance_x
+	metrics.advance_y = bitmap.advance_y
+	if bitmap.width <= 0 || bitmap.height <= 0 {
+		metrics.state = .Bitmapless
+		metrics.page_index = -1
+		manager.glyphs[key] = metrics
+		return metrics, true
+	}
+
+	padded_width := bitmap.width + 2 * atlas_padding
+	padded_height := bitmap.height + 2 * atlas_padding
+	page_index, packed_x, packed_y, packed := atlas_manager_pack(manager, padded_width, padded_height)
 	if !packed {
-		fmt.println("[WARN] AtlasManager: glyph too large for empty atlas page")
+		fmt.println("[WARN] AtlasManager: no room for glyph")
+		manager.glyphs[key] = Atlas_Glyph{state = .Failed, page_index = -1}
 		return {}, false
 	}
 
-	return enqueue_glyph_upload(manager, page_idx, bitmap, bw, bh, ax, ay, xoff, yoff, advance_x, advance_y, key)
+	padded := make([]byte, int(padded_width*padded_height), context.temp_allocator)
+	for row := 0; row < int(bitmap.height); row += 1 {
+		src_start := row * int(bitmap.width)
+		dst_start := (row + atlas_padding) * int(padded_width) + atlas_padding
+		copy(
+			padded[dst_start:dst_start+int(bitmap.width)],
+			bitmap.pixels[src_start:src_start+int(bitmap.width)],
+		)
+	}
+
+	page := &manager.pages[page_index]
+	gpu.gpu_upload_enqueue_texture_copy(
+		manager.ctx,
+		page.texture,
+		gpu.Gpu_Image_Upload_Desc{
+			region = {
+				x = u32(packed_x),
+				y = u32(packed_y),
+				width = u32(padded_width),
+				height = u32(padded_height),
+			},
+			final_layout = .SHADER_READ_ONLY_OPTIMAL,
+		},
+		padded,
+	)
+
+	x0 := i32(packed_x) + atlas_padding
+	y0 := i32(packed_y) + atlas_padding
+	metrics.state = .Resident
+	metrics.page_index = page_index
+	metrics.texture_index = page.texture_index
+	metrics.x0 = x0
+	metrics.y0 = y0
+	metrics.x1 = x0 + bitmap.width
+	metrics.y1 = y0 + bitmap.height
+	metrics.u0 = f32(metrics.x0) / f32(atlas_page_width)
+	metrics.v0 = f32(metrics.y0) / f32(atlas_page_height)
+	metrics.u1 = f32(metrics.x1) / f32(atlas_page_width)
+	metrics.v1 = f32(metrics.y1) / f32(atlas_page_height)
+	metrics.xoff = bitmap.xoff
+	metrics.yoff = bitmap.yoff
+	metrics.xoff2 = bitmap.xoff + f32(bitmap.width)
+	metrics.yoff2 = bitmap.yoff + f32(bitmap.height)
+	manager.glyphs[key] = metrics
+	return metrics, true
 }

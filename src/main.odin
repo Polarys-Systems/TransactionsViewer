@@ -16,11 +16,6 @@ import SDL "vendor:sdl3"
 
 import mui "vendor:microui"
 
-// Profiling
-import "base:runtime"
-import "core:prof/spall"
-import "core:sync"
-
 import "app"
 
 // Global definitions
@@ -51,29 +46,6 @@ window_pixel_scale :: proc(window: ^SDL.Window) -> [2]f32 {
 
 // --------------------------------------------------------------- //
 
-spall_ctx: spall.Context
-@(thread_local) spall_buffer: spall.Buffer
-
-// Automatic profiling of every procedure:
-
-@(instrumentation_enter)
-spall_enter :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
-	spall._buffer_begin(&spall_ctx, &spall_buffer, "", "", loc)
-}
-
-@(instrumentation_exit)
-spall_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
-	spall._buffer_end(&spall_ctx, &spall_buffer)
-}
-
-// --------------------------------------------------------------- //
-
-UI_Font :: struct {
-	renderer: ^gpu_text.Text_Renderer,
-	font_id:  u32,
-	size:     f32,
-}
-
 ui_icon_codepoint :: proc(icon: mui.Icon) -> rune {
 	switch icon {
 	case .CLOSE:     return rune(0xF00D)
@@ -90,8 +62,8 @@ ui_get_text_width :: proc(font : mui.Font, str : string) -> i32 {
 	if font == nil {
 		return 0
 	}
-	ui_font := transmute(^UI_Font)font
-	width := gpu_text.text_measure_width(ui_font.renderer, str, ui_font.size, ui_font.font_id)
+	ui_font := transmute(^gpu_text.Text_Font)font
+	width := gpu_text.text_measure_width(ui_font, str)
 	return i32(math.ceil(width))
 }
 
@@ -101,24 +73,12 @@ ui_get_text_height :: proc(font : mui.Font) -> i32 {
 	if font == nil {
 		return 0
 	}
-	ui_font := transmute(^UI_Font)font
-	height := gpu_text.text_measure_height(ui_font.renderer, ui_font.size, ui_font.font_id)
+	ui_font := transmute(^gpu_text.Text_Font)font
+	height := gpu_text.text_line_height(ui_font)
 	return i32(math.ceil(height))
 }
 
 main :: proc() {
-
-	// profiling init
-	//
-	spall_ctx = spall.context_create("trace_test.spall")
-	defer spall.context_destroy(&spall_ctx)
-
-	buffer_backing := make([]u8, spall.BUFFER_DEFAULT_SIZE)
-	defer delete(buffer_backing)
-
-	spall_buffer = spall.buffer_create(buffer_backing, u32(sync.current_thread_id()))
-	defer spall.buffer_destroy(&spall_ctx, &spall_buffer)
-
 	// vulkan renderer init
 	//
 	desc := gpu.gpu_desc_default()
@@ -133,7 +93,7 @@ main :: proc() {
 	defer gpu.gpu_shutdown(ctx)
 
 	font_renderer := gpu_text.text_renderer_create(ctx);
-	defer gpu_text.destroy_text_renderer(ctx, &font_renderer);
+	defer gpu_text.text_renderer_destroy(&font_renderer);
 	ui_renderer := app.ui_renderer_create(ctx)
 	defer app.ui_renderer_destroy(ctx, &ui_renderer)
 
@@ -153,13 +113,13 @@ main :: proc() {
 		fmt.println("[FONT][ERROR] Could not open font");
 		return
 	}
-	ui_font := UI_Font{
-		renderer = &font_renderer,
-		font_id  = roboto_mono_id,
-		size     = 24,
+	ui_font, ui_font_ok := gpu_text.text_font_create(&font_renderer, roboto_mono_id, 24)
+	if !ui_font_ok {
+		fmt.println("[FONT][ERROR] Could not create UI font size")
+		return
 	}
 	ui_ctx.style.font = transmute(mui.Font)&ui_font
-	ui_ctx.style.size.y = auto_cast ui_font.size
+	ui_ctx.style.size.y = auto_cast ui_font.Size
 
 	icons_font_id, ok_icon := gpu_text.text_renderer_register_font(
 		&font_renderer,
@@ -170,38 +130,10 @@ main :: proc() {
 		fmt.println("[FONT][ERROR] Could not open font");
 		return
 	}
-	ui_font_icon := UI_Font{
-		renderer = &font_renderer,
-		font_id  = icons_font_id,
-		size     = 24,
-	}
-	if !gpu_text.text_renderer_set_icon_font(&font_renderer, icons_font_id) {
-		fmt.println("[FONT][ERROR] Could not select icon font")
+	ui_font_icon, icon_font_ok := gpu_text.text_font_create(&font_renderer, icons_font_id, 24)
+	if !icon_font_ok {
+		fmt.println("[FONT][ERROR] Could not create icon font size")
 		return
-	}
-	icon_ids := [5]mui.Icon{.CLOSE, .CHECK, .COLLAPSED, .EXPANDED, .RESIZE}
-	for icon in icon_ids {
-		_ = gpu_text.text_renderer_prepare_icon(
-			&font_renderer,
-			ui_icon_codepoint(icon),
-			ui_font_icon.size,
-		)
-	}
-	gpu_text.text_renderer_upload(ctx, &font_renderer)
-
-	statoshi_font_id, satoshi_ok := gpu_text.text_renderer_register_font(
-	    &font_renderer,
-	    "./assets/fonts/Satoshi_Complete/Satoshi_Complete/Fonts/OTF/Satoshi-Regular.otf",
-	    context.temp_allocator,
-	)
-	if !satoshi_ok {
-		fmt.println("[FONT][ERROR] Could not load satoshi font")
-		return
-	}
-	satoshi_ui_font := UI_Font{
-		renderer = &font_renderer,
-		font_id  = statoshi_font_id,
-		size     = 18,
 	}
 
 	running := true
@@ -261,6 +193,12 @@ main :: proc() {
 					i32(event.button.y * mouse_scale[1]),
 					.LEFT,
 				)
+			case .MOUSE_WHEEL:
+			    mui.input_scroll(
+			        ui_ctx,
+			        i32(event.wheel.integer_x) * 40,
+			        -i32(event.wheel.integer_y) * 40,
+			    )
 			case .DROP_BEGIN:
 		        // A drag entered / drop sequence began.
 		        SDL.Log("Drop begin\n")
@@ -296,6 +234,12 @@ main :: proc() {
 			mui.label(ui_ctx, "This is a label")
 			mui.layout_row(ui_ctx, []i32{win_size.x - ui_ctx.style.padding / 2}, mui.get_layout(ui_ctx).size.y)
 			mui.button(ui_ctx, "This is a button", .NONE, {})
+
+			builder : strings.Builder
+			strings.builder_init(&builder, context.temp_allocator)
+			defer strings.builder_destroy(&builder)
+			strings.write_f64(&builder, time.duration_milliseconds(duration), 'f')
+			mui.label(ui_ctx, strings.to_string(builder))
 			mui.end_window(ui_ctx)
 		}
 
@@ -311,7 +255,8 @@ main :: proc() {
 
 		if len(app_context.csv_files) > 0 {
 			if mui.begin_window(ui_ctx, "Files", mui.Rect{40, 40, 400, 240}) {
-				mui.layout_row(ui_ctx, []i32{270, 110}, 0)
+				win_size := mui.get_layout(ui_ctx).size;
+				mui.layout_row(ui_ctx, []i32{win_size.x - 110, 110}, 0)
 				for filename, file_index in app_context.csv_files {
 					mui.label(ui_ctx, filename)
 					mui.push_id_uintptr(ui_ctx, uintptr(file_index))
@@ -331,86 +276,72 @@ main :: proc() {
 		for document, document_index in app_context.csv_documents {
 			offset := i32(document_index % 3) * 24
 			window_rect := mui.Rect{280 + offset, 80 + offset, 720, 440}
+			// Call before begin_window, while the ID stack is empty.
+			window := mui.get_container(ui_ctx, document.path)
+
 			if mui.begin_window(ui_ctx, document.path, window_rect) {
-				layout := mui.get_layout(ui_ctx)
-				n_cols := document.column_count
-				if n_cols > 0 {
-					rows : []i32 = make_slice([]i32, n_cols, context.temp_allocator)
-					column_width := layout.body.w / auto_cast n_cols
-					for i in 0..<n_cols {
-						rows[i] = column_width
-					}
-					for row in document.rows {
-						// Height 0 lets microui use its normal control height.
-						mui.layout_row(ui_ctx, rows, 0)
-						for val in row {
-							mui.label(ui_ctx, val)
-						}
-					}
-				}
-				mui.end_window(ui_ctx)
+			    layout := mui.get_layout(ui_ctx)
+
+			    row_h := ui_ctx.style.size.y + 2 * ui_ctx.style.padding
+			    row_pitch := row_h + ui_ctx.style.spacing
+			    column_w := layout.body.w / i32(document.column_count)
+
+			    first := max(0, window.scroll.y / row_pitch)
+			    last := min(
+			        cast(i32)len(document.rows),
+			        (window.scroll.y + layout.body.h) / row_pitch + 2,
+			    )
+
+			    for row_index in first..<last {
+			        y := i32(row_index) * row_pitch
+			        for value, column_index in document.rows[row_index] {
+			            x := i32(column_index) * column_w
+			            mui.layout_set_next(ui_ctx, mui.Rect{x, y, column_w, row_h}, true)
+			            mui.label(ui_ctx, value)
+			        }
+			    }
+
+			    // Preserve the full virtual content size for Microui's scrollbar.
+			    if len(document.rows) > 0 {
+			        y := i32(len(document.rows) - 1) * row_pitch
+			        mui.layout_set_next(
+			            ui_ctx,
+			            mui.Rect{0, y, column_w * i32(document.column_count), row_h},
+			            true,
+			        )
+			        mui.label(ui_ctx, "")
+			    }
+
+			    mui.end_window(ui_ctx)
 			}
 		}
 
 		mui.end(ui_ctx)
 
-		// Populate missing atlas glyphs before beginning dynamic rendering.
-		{
-			current_command: ^mui.Command
-			for variant in mui.next_command_iterator(ui_ctx, &current_command) {
-				#partial switch cmd in variant {
-				case ^mui.Command_Text:
-					_font := cast(^UI_Font)cmd.font
-					_ = gpu_text.text_renderer_prepare(
-						&font_renderer,
-						cmd.str,
-						_font.size,
-						_font.font_id,
-					)
-				case ^mui.Command_Icon:
-					codepoint := ui_icon_codepoint(cmd.id)
-					if codepoint != 0 {
-						_ = gpu_text.text_renderer_prepare_icon(&font_renderer, codepoint, ui_font_icon.size)
-					}
-				case:
-				}
-			}
-		}
-		gpu_text.text_renderer_upload(ctx, &font_renderer)
-
 		frame, frame_err := gpu.gpu_begin_frame(ctx)
 		if !gpu.gpu_error_is_ok(frame_err) {
+			free_all(context.temp_allocator)
 			continue
 		}
-
-		gpu.gpu_begin_swapchain_rendering(ctx, frame, {
-			clear = true,
-			color = {0.02, 0.025, 0.04, 1.0},
-		})
 
 		current_scissor := vk.Rect2D{
 			offset = {0, 0},
 			extent = frame.extent,
 		}
-		app.ui_renderer_begin(&ui_renderer)
+		app.ui_renderer_begin(ctx, &ui_renderer)
 
 		{
 			current_command: ^mui.Command
 			for variant in mui.next_command_iterator(ui_ctx, &current_command) {
 				switch cmd in variant {
 				case ^mui.Command_Text:
-					_font := cast(^UI_Font)cmd.font
+					_font := cast(^gpu_text.Text_Font)cmd.font
 					color : [4]f32 = {
 						cast(f32)cmd.color.r / 255,
 						cast(f32)cmd.color.g / 255,
 						cast(f32)cmd.color.b / 255,
 						cast(f32)cmd.color.a / 255
 					}
-					baseline_y := f32(cmd.pos.y) + gpu_text.text_baseline_offset_for_font(
-						&font_renderer,
-						_font.font_id,
-						_font.size,
-					)
 					clip_rect := [4]f32{
 						f32(current_scissor.offset.x),
 						f32(current_scissor.offset.y),
@@ -419,12 +350,10 @@ main :: proc() {
 					}
 					app.ui_renderer_push_text(
 						&ui_renderer,
-						&font_renderer,
+						_font,
 						cmd.str,
 						f32(cmd.pos.x),
-						baseline_y,
-						_font.size,
-						_font.font_id,
+						f32(cmd.pos.y),
 						color,
 						clip_rect,
 					)
@@ -446,7 +375,7 @@ main :: proc() {
 						{f32(cmd.rect.x), f32(cmd.rect.y)},
 						{f32(cmd.rect.x + cmd.rect.w), f32(cmd.rect.y + cmd.rect.h)},
 						color,
-						{color.r - 0.02, color.g - 0.02, color.b - 0.02, color.a},
+						{color.r - 0.05, color.g - 0.05, color.b - 0.05, color.a},
 						8,
 						0,
 						clip_rect,
@@ -468,13 +397,12 @@ main :: proc() {
 						}
 						app.ui_renderer_push_icon(
 							&ui_renderer,
-							&font_renderer,
+							&ui_font_icon,
 							codepoint,
 							f32(cmd.rect.x),
 							f32(cmd.rect.y),
 							f32(cmd.rect.w),
 							f32(cmd.rect.h),
-							ui_font_icon.size,
 							color,
 							clip_rect,
 						)
@@ -495,6 +423,14 @@ main :: proc() {
 				}
 			}
 		}
+
+		// Atlas copies must precede dynamic rendering so newly seen glyphs can be
+		// sampled in this frame without an immediate queue submission or wait.
+		gpu.gpu_upload_record(ctx, frame.cmd)
+		gpu.gpu_begin_swapchain_rendering(ctx, frame, {
+			clear = true,
+			color = {0.02, 0.025, 0.04, 1.0},
+		})
 		app.ui_renderer_draw(ctx, &ui_renderer, frame.cmd, frame.extent)
 
 		gpu.gpu_end_swapchain_rendering(ctx, frame)

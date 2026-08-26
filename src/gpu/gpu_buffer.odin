@@ -170,5 +170,7 @@ gpu_upload_buffer :: proc(ctx: ^Gpu_Context, dst: ^Gpu_Buffer, data: rawptr, siz
 	}
 
 	gpu_upload_enqueue_buffer_copy(ctx, dst.buffer, data, size, dst_offset)
-	gpu_upload_flush(ctx)
+	if !ctx.upload.in_frame {
+		gpu_upload_flush(ctx)
+	}
 }

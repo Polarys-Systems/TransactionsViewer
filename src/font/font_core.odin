@@ -1,15 +1,10 @@
 package font
 
 import "core:c"
-import "core:math"
 import stbtt "vendor:stb/truetype"
 
-when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+when ODIN_OS == .Linux {
 	@(extra_linker_flags="-lfreetype")
-	foreign import freetype "system:freetype"
-} else when ODIN_OS == .Windows {
-	foreign import freetype "system:freetype"
-} else {
 	foreign import freetype "system:freetype"
 }
 
@@ -172,26 +167,34 @@ FT_RENDER_MODE_NORMAL :: c.int(0)
 FT_PIXEL_MODE_GRAY :: c.uchar(2)
 ft_library_nil :: FT_Library(uintptr(0))
 
-@(default_calling_convention = "c", link_prefix = "FT_")
-foreign freetype {
-	Init_FreeType :: proc(alibrary: ^FT_Library) -> FT_Error ---
-	Done_FreeType :: proc(library: FT_Library) -> FT_Error ---
-	New_Memory_Face :: proc(library: FT_Library, file_base: ^FT_Byte, file_size: FT_Long, face_index: FT_Long, aface: ^FT_Face) -> FT_Error ---
-	Done_Face :: proc(face: FT_Face) -> FT_Error ---
-	Set_Pixel_Sizes :: proc(face: FT_Face, pixel_width, pixel_height: FT_UInt) -> FT_Error ---
-	Load_Glyph :: proc(face: FT_Face, glyph_index: FT_UInt, load_flags: FT_Int32) -> FT_Error ---
-	Render_Glyph :: proc(slot: FT_GlyphSlot, render_mode: c.int) -> FT_Error ---
-	Get_Char_Index :: proc(face: FT_Face, charcode: c.ulong) -> FT_UInt ---
+when ODIN_OS == .Linux {
+	@(default_calling_convention = "c", link_prefix = "FT_")
+	foreign freetype {
+		Init_FreeType :: proc(alibrary: ^FT_Library) -> FT_Error ---
+		Done_FreeType :: proc(library: FT_Library) -> FT_Error ---
+		New_Memory_Face :: proc(library: FT_Library, file_base: ^FT_Byte, file_size: FT_Long, face_index: FT_Long, aface: ^FT_Face) -> FT_Error ---
+		Done_Face :: proc(face: FT_Face) -> FT_Error ---
+		Set_Char_Size :: proc(face: FT_Face, char_width, char_height: FT_F26Dot6, horizontal_resolution, vertical_resolution: FT_UInt) -> FT_Error ---
+		Load_Glyph :: proc(face: FT_Face, glyph_index: FT_UInt, load_flags: FT_Int32) -> FT_Error ---
+		Get_Char_Index :: proc(face: FT_Face, charcode: c.ulong) -> FT_UInt ---
+	}
+}
+
+Backend :: enum {
+	STB,
+	FreeType,
 }
 
 Face :: struct {
 	id: u32,
 	path: string,
 	data: []byte,
+	backend: Backend,
 	stb_info: stbtt.fontinfo,
 	stb_valid: bool,
 	ft_face: FT_Face,
 	ft_valid: bool,
+	ft_size_64: u32,
 }
 
 Line_Metrics :: struct {
@@ -218,22 +221,32 @@ library_initialized: bool
 library_available: bool
 
 init_once :: proc() -> bool {
-	if library_initialized {
+	when ODIN_OS == .Linux {
+		if library_initialized {
+			return library_available
+		}
+		library_initialized = true
+		err := Init_FreeType(&library)
+		library_available = err == 0 && library != ft_library_nil
 		return library_available
+	} else {
+		return false
 	}
-	library_initialized = true
-	err := Init_FreeType(&library)
-	library_available = err == 0 && library != ft_library_nil
-	return library_available
 }
 
 shutdown :: proc() {
-	if library_available && library != ft_library_nil {
-		_ = Done_FreeType(library)
+	when ODIN_OS == .Linux {
+		if library_available && library != ft_library_nil {
+			_ = Done_FreeType(library)
+		}
+		library = ft_library_nil
+		library_initialized = false
+		library_available = false
 	}
-	library = ft_library_nil
-	library_initialized = false
-	library_available = false
+}
+
+size_from_64 :: #force_inline proc(size_64: u32) -> f32 {
+	return max(f32(size_64) / 64.0, 1.0 / 64.0)
 }
 
 face_load_from_data :: proc(id: u32, font_data: []byte, path: string = "", allocator := context.allocator) -> (Face, bool) {
@@ -241,33 +254,47 @@ face_load_from_data :: proc(id: u32, font_data: []byte, path: string = "", alloc
 		return {}, false
 	}
 
-	face: Face
-	face.id = id
-	face.path = path
+	face := Face{id = id, path = path}
 	face.data = make([]byte, len(font_data), allocator)
 	copy(face.data, font_data)
+	face.stb_valid = bool(stbtt.InitFont(&face.stb_info, raw_data(face.data), 0))
 
-	if stbtt.InitFont(&face.stb_info, raw_data(face.data), 0) {
-		face.stb_valid = true
-	}
-	if init_once() {
-		ft_face: FT_Face
-		err := New_Memory_Face(library, transmute(^FT_Byte)raw_data(face.data), FT_Long(len(face.data)), 0, &ft_face)
-		if err == 0 && ft_face != nil {
-			face.ft_face = ft_face
-			face.ft_valid = true
+	when ODIN_OS == .Linux {
+		if init_once() {
+			ft_face: FT_Face
+			err := New_Memory_Face(
+				library,
+				transmute(^FT_Byte)raw_data(face.data),
+				FT_Long(len(face.data)),
+				0,
+				&ft_face,
+			)
+			if err == 0 && ft_face != nil {
+				face.ft_face = ft_face
+				face.ft_valid = true
+				face.backend = .FreeType
+			}
 		}
 	}
 
-	return face, face.stb_valid || face.ft_valid
+	if !face.ft_valid && face.stb_valid {
+		face.backend = .STB
+	}
+	if !face.ft_valid && !face.stb_valid {
+		delete(face.data, allocator)
+		return {}, false
+	}
+	return face, true
 }
 
 face_destroy :: proc(face: ^Face, allocator := context.allocator) {
 	if face == nil {
 		return
 	}
-	if face.ft_valid && face.ft_face != nil {
-		_ = Done_Face(face.ft_face)
+	when ODIN_OS == .Linux {
+		if face.ft_valid && face.ft_face != nil {
+			_ = Done_Face(face.ft_face)
+		}
 	}
 	if face.data != nil {
 		delete(face.data, allocator)
@@ -275,62 +302,82 @@ face_destroy :: proc(face: ^Face, allocator := context.allocator) {
 	face^ = {}
 }
 
-face_set_pixel_size :: proc(face: ^Face, size_px: f32) -> bool {
-	if face == nil || !face.ft_valid || face.ft_face == nil {
+face_set_size :: proc(face: ^Face, size_64: u32) -> bool {
+	when ODIN_OS == .Linux {
+		if face == nil || face.backend != .FreeType || !face.ft_valid || face.ft_face == nil {
+			return false
+		}
+		if face.ft_size_64 == size_64 {
+			return true
+		}
+		if Set_Char_Size(face.ft_face, 0, FT_F26Dot6(max(size_64, 1)), 72, 72) != 0 {
+			return false
+		}
+		face.ft_size_64 = size_64
+		return true
+	} else {
 		return false
 	}
-	size := FT_UInt(max(1, i32(math.round(f64(size_px)))))
-	return Set_Pixel_Sizes(face.ft_face, 0, size) == 0
 }
 
 glyph_index :: proc(face: ^Face, r: rune) -> (i32, bool) {
 	if face == nil {
 		return 0, false
 	}
-	if face.ft_valid && face.ft_face != nil {
-		idx := Get_Char_Index(face.ft_face, c.ulong(r))
-		return i32(idx), idx > 0
+	when ODIN_OS == .Linux {
+		if face.backend == .FreeType && face.ft_valid && face.ft_face != nil {
+			idx := Get_Char_Index(face.ft_face, c.ulong(r))
+			return i32(idx), idx > 0
+		}
 	}
-	if face.stb_valid {
+	if face.backend == .STB && face.stb_valid {
 		idx := stbtt.FindGlyphIndex(&face.stb_info, r)
 		return idx, idx > 0
 	}
 	return 0, false
 }
 
-glyph_advance :: proc(face: ^Face, glyph_idx: i32, size_px: f32) -> f32 {
+glyph_advance :: proc(face: ^Face, glyph_idx: i32, size_64: u32) -> (f32, bool) {
 	if face == nil || glyph_idx <= 0 {
-		return 0
+		return 0, false
 	}
-	if face.ft_valid && face_set_pixel_size(face, size_px) {
-		if Load_Glyph(face.ft_face, FT_UInt(glyph_idx), FT_LOAD_DEFAULT) == 0 && face.ft_face.glyph != nil {
-			return f32(face.ft_face.glyph.advance.x) / 64.0
+	when ODIN_OS == .Linux {
+		if face.backend == .FreeType {
+			if face_set_size(face, size_64) &&
+			   Load_Glyph(face.ft_face, FT_UInt(glyph_idx), FT_LOAD_DEFAULT) == 0 &&
+			   face.ft_face.glyph != nil {
+				return f32(face.ft_face.glyph.advance.x) / 64.0, true
+			}
+			return 0, false
 		}
 	}
-	if face.stb_valid {
-		scale := stbtt.ScaleForPixelHeight(&face.stb_info, max(size_px, 1.0))
+	if face.backend == .STB && face.stb_valid {
+		scale := stbtt.ScaleForMappingEmToPixels(&face.stb_info, size_from_64(size_64))
 		advance_width, left_side_bearing: c.int
 		stbtt.GetGlyphHMetrics(&face.stb_info, glyph_idx, &advance_width, &left_side_bearing)
-		return f32(advance_width) * scale
+		return f32(advance_width) * scale, true
 	}
-	return size_px * 0.60
+	return 0, false
 }
 
-line_metrics :: proc(face: ^Face, size_px: f32) -> Line_Metrics {
-	if face != nil && face.ft_valid && face_set_pixel_size(face, size_px) && face.ft_face.size != nil {
-		m := face.ft_face.size.metrics
-		ascent := f32(m.ascender) / 64.0
-		descent := f32(m.descender) / 64.0
-		height := f32(m.height) / 64.0
-		return Line_Metrics{
-			ascent = ascent,
-			descent = descent,
-			line_gap = max(0.0, height - (ascent - descent)),
-			line_height = max(1.0, height),
+line_metrics :: proc(face: ^Face, size_64: u32) -> Line_Metrics {
+	size_px := size_from_64(size_64)
+	when ODIN_OS == .Linux {
+		if face != nil && face.backend == .FreeType && face_set_size(face, size_64) && face.ft_face.size != nil {
+			m := face.ft_face.size.metrics
+			ascent := f32(m.ascender) / 64.0
+			descent := f32(m.descender) / 64.0
+			height := f32(m.height) / 64.0
+			return Line_Metrics{
+				ascent = ascent,
+				descent = descent,
+				line_gap = max(0.0, height - (ascent - descent)),
+				line_height = max(1.0, height),
+			}
 		}
 	}
-	if face != nil && face.stb_valid {
-		scale := stbtt.ScaleForPixelHeight(&face.stb_info, max(size_px, 1.0))
+	if face != nil && face.backend == .STB && face.stb_valid {
+		scale := stbtt.ScaleForMappingEmToPixels(&face.stb_info, size_px)
 		ascent, descent, line_gap: c.int
 		stbtt.GetFontVMetrics(&face.stb_info, &ascent, &descent, &line_gap)
 		return Line_Metrics{
@@ -343,27 +390,22 @@ line_metrics :: proc(face: ^Face, size_px: f32) -> Line_Metrics {
 	return Line_Metrics{
 		ascent = size_px * 0.80,
 		descent = -size_px * 0.20,
-		line_gap = 0,
 		line_height = max(1.0, size_px),
 	}
 }
 
-shape_scale :: proc(face: ^Face, size_px: f32) -> f32 {
-	if face != nil && face.stb_valid {
-		return stbtt.ScaleForPixelHeight(&face.stb_info, max(size_px, 1.0))
-	}
-	if face != nil && face.ft_valid && face.ft_face != nil && face.ft_face.units_per_EM > 0 {
-		return max(size_px, 1.0) / f32(face.ft_face.units_per_EM)
-	}
-	return 1.0
-}
-
-rasterize_glyph :: proc(face: ^Face, size_px: f32, glyph_idx: i32, allocator := context.temp_allocator) -> (Glyph_Bitmap, bool) {
+rasterize_glyph :: proc(face: ^Face, size_64: u32, glyph_idx: i32, allocator := context.temp_allocator) -> (Glyph_Bitmap, bool) {
 	if face == nil || glyph_idx <= 0 {
 		return {}, false
 	}
-	if face.ft_valid && face_set_pixel_size(face, size_px) {
-		if Load_Glyph(face.ft_face, FT_UInt(glyph_idx), FT_LOAD_RENDER) == 0 && face.ft_face.glyph != nil {
+	when ODIN_OS == .Linux {
+		if face.backend == .FreeType {
+			if !face_set_size(face, size_64) ||
+			   Load_Glyph(face.ft_face, FT_UInt(glyph_idx), FT_LOAD_RENDER) != 0 ||
+			   face.ft_face.glyph == nil {
+				return {}, false
+			}
+
 			slot := face.ft_face.glyph
 			advance_x := f32(slot.advance.x) / 64.0
 			advance_y := f32(slot.advance.y) / 64.0
@@ -371,28 +413,25 @@ rasterize_glyph :: proc(face: ^Face, size_px: f32, glyph_idx: i32, allocator := 
 			w := i32(bitmap.width)
 			h := i32(bitmap.rows)
 			if w <= 0 || h <= 0 || bitmap.buffer == nil {
-				return Glyph_Bitmap{
-					advance_x = advance_x,
-					advance_y = advance_y,
-				}, true
+				return Glyph_Bitmap{advance_x = advance_x, advance_y = advance_y}, true
 			}
-			pixels := make([]byte, w*h, allocator)
-			pitch := i32(bitmap.pitch)
-			if pitch < 0 do pitch = -pitch
-			w_i := int(w)
-			h_i := int(h)
-			pitch_i := int(pitch)
-			for row := 0; row < h_i; row += 1 {
-				src_start := row * pitch_i
-				dst_start := row * w_i
-				src := ([^]byte)(bitmap.buffer)[src_start:src_start+w_i]
-				dst := pixels[dst_start:dst_start+w_i]
-				if bitmap.pixel_mode == FT_PIXEL_MODE_GRAY {
-					copy(dst, src)
-				} else {
-					copy(dst, src)
+			if bitmap.pixel_mode != FT_PIXEL_MODE_GRAY || abs(i32(bitmap.pitch)) < w {
+				return {}, false
+			}
+
+			pixels := make([]byte, int(w*h), allocator)
+			pitch := int(abs(i32(bitmap.pitch)))
+			for row := 0; row < int(h); row += 1 {
+				src_row := row
+				if bitmap.pitch < 0 {
+					src_row = int(h) - 1 - row
 				}
+				src_start := src_row * pitch
+				dst_start := row * int(w)
+				src := ([^]byte)(bitmap.buffer)[src_start:src_start+int(w)]
+				copy(pixels[dst_start:dst_start+int(w)], src)
 			}
+
 			xoff := f32(slot.bitmap_left)
 			yoff := -f32(slot.bitmap_top)
 			return Glyph_Bitmap{
@@ -409,22 +448,20 @@ rasterize_glyph :: proc(face: ^Face, size_px: f32, glyph_idx: i32, allocator := 
 		}
 	}
 
-	if face.stb_valid {
-		scale := stbtt.ScaleForPixelHeight(&face.stb_info, max(size_px, 1.0))
+	if face.backend == .STB && face.stb_valid {
+		scale := stbtt.ScaleForMappingEmToPixels(&face.stb_info, size_from_64(size_64))
 		advance_width, left_side_bearing: c.int
 		stbtt.GetGlyphHMetrics(&face.stb_info, glyph_idx, &advance_width, &left_side_bearing)
 		advance_x := f32(advance_width) * scale
 		ix0, iy0, ix1, iy1: c.int
-		stbtt.GetGlyphBitmapBox(&face.stb_info, c.int(glyph_idx), scale, scale, &ix0, &iy0, &ix1, &iy1)
+		stbtt.GetGlyphBitmapBox(&face.stb_info, glyph_idx, scale, scale, &ix0, &iy0, &ix1, &iy1)
 		w := ix1 - ix0
 		h := iy1 - iy0
 		if w <= 0 || h <= 0 {
-			return Glyph_Bitmap{
-				advance_x = advance_x,
-			}, true
+			return Glyph_Bitmap{advance_x = advance_x}, true
 		}
 		pixels := make([]byte, int(w*h), allocator)
-		stbtt.MakeGlyphBitmap(&face.stb_info, raw_data(pixels), w, h, w, scale, scale, c.int(glyph_idx))
+		stbtt.MakeGlyphBitmap(&face.stb_info, raw_data(pixels), w, h, w, scale, scale, glyph_idx)
 		return Glyph_Bitmap{
 			pixels = pixels,
 			width = i32(w),
@@ -436,6 +473,5 @@ rasterize_glyph :: proc(face: ^Face, size_px: f32, glyph_idx: i32, allocator := 
 			advance_x = advance_x,
 		}, true
 	}
-
 	return {}, false
 }

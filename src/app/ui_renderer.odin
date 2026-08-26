@@ -1,7 +1,7 @@
 package app
 
-import "core:c/libc"
 import "core:fmt"
+import "core:math"
 
 import gpu "../gpu"
 import gpu_text "../gpu_text"
@@ -32,7 +32,10 @@ UI_Push_Constants :: struct {
 UI_Renderer :: struct {
 	pipeline:         gpu.Gpu_Pipeline,
 	instance_buffers: [dynamic]gpu.Gpu_Buffer,
-	instances:        [dynamic]UI_Instance,
+	active_buffer:    ^gpu.Gpu_Buffer,
+	instance_count:   int,
+	instance_capacity: int,
+	overflowed:       bool,
 	sampler:          gpu.Gpu_Sampler_Handle,
 	sampler_index:    u32,
 }
@@ -87,12 +90,7 @@ ui_renderer_create :: proc(ctx: ^gpu.Gpu_Context, allocator := context.allocator
 			"ui_instance_buffer",
 		)
 	}
-	renderer.instances = make(
-		[dynamic]UI_Instance,
-		0,
-		int(UI_INSTANCE_BUFFER_SIZE / size_of(UI_Instance)),
-		allocator,
-	)
+	renderer.instance_capacity = int(UI_INSTANCE_BUFFER_SIZE / size_of(UI_Instance))
 	return renderer
 }
 
@@ -104,16 +102,33 @@ ui_renderer_destroy :: proc(ctx: ^gpu.Gpu_Context, renderer: ^UI_Renderer) {
 		gpu.gpu_destroy_buffer(ctx, &buffer)
 	}
 	delete(renderer.instance_buffers)
-	delete(renderer.instances)
 	gpu.gpu_destroy_sampler(ctx, renderer.sampler)
 	gpu.gpu_destroy_pipeline(ctx, &renderer.pipeline)
 	renderer^ = {}
 }
 
-ui_renderer_begin :: proc(renderer: ^UI_Renderer) {
-	if renderer != nil {
-		clear(&renderer.instances)
+ui_renderer_begin :: proc(ctx: ^gpu.Gpu_Context, renderer: ^UI_Renderer) {
+	if renderer == nil {
+		return
 	}
+	frame_slot := int(gpu.gpu_current_frame_slot(ctx))
+	renderer.active_buffer = &renderer.instance_buffers[frame_slot]
+	renderer.instance_count = 0
+	renderer.overflowed = false
+}
+
+ui_renderer_push_instance :: #force_inline proc(renderer: ^UI_Renderer, instance: UI_Instance) -> bool {
+	if renderer == nil || renderer.active_buffer == nil || renderer.active_buffer.cpu == nil {
+		return false
+	}
+	if renderer.instance_count >= renderer.instance_capacity {
+		renderer.overflowed = true
+		return false
+	}
+	instances := ([^]UI_Instance)(renderer.active_buffer.cpu)
+	instances[renderer.instance_count] = instance
+	renderer.instance_count += 1
+	return true
 }
 
 ui_renderer_push_rect :: proc(
@@ -126,7 +141,7 @@ ui_renderer_push_rect :: proc(
 	if renderer == nil || bottom_right.x <= top_left.x || bottom_right.y <= top_left.y {
 		return
 	}
-	append(&renderer.instances, UI_Instance{
+	_ = ui_renderer_push_instance(renderer, UI_Instance{
 		top_left = top_left,
 		bottom_right = bottom_right,
 		color_top = color_top,
@@ -140,56 +155,78 @@ ui_renderer_push_rect :: proc(
 
 ui_renderer_push_text :: proc(
 	renderer: ^UI_Renderer,
-	text_renderer: ^gpu_text.Text_Renderer,
+	font: ^gpu_text.Text_Font,
 	text: string,
-	x, y, size: f32,
-	font_id: u32,
+	x, y: f32,
 	color: [4]f32,
 	clip_rect: [4]f32,
 ) {
-	if renderer == nil || text_renderer == nil {
+	if renderer == nil || font == nil || font.Renderer == nil || len(text) == 0 {
 		return
 	}
-	quads := gpu_text.text_build_quads(text_renderer, text, x, y, size, font_id)
-	for quad in quads {
-		append(&renderer.instances, UI_Instance{
-			top_left = quad.top_left,
-			bottom_right = quad.bottom_right,
-			color_top = color,
-			color_bottom = color,
-			top_left_uv = quad.top_left_uv,
-			bottom_right_uv = quad.bottom_right_uv,
-			clip_rect = clip_rect,
-			texture_index = quad.texture_index,
-			sampler_index = renderer.sampler_index,
-		})
+	cursor_x := x
+	cursor_y := y + font.Metrics.ascent
+	for codepoint in text {
+		switch codepoint {
+		case '\r':
+			continue
+		case '\n':
+			cursor_x = x
+			cursor_y += font.Metrics.line_height
+			continue
+		}
+		glyph, ok := gpu_text.text_font_get_glyph(font, codepoint)
+		if !ok {
+			continue
+		}
+		if glyph.state == .Resident {
+			px := math.floor(cursor_x + glyph.xoff + 0.5)
+			py := math.floor(cursor_y + glyph.yoff + 0.5)
+			_ = ui_renderer_push_instance(renderer, UI_Instance{
+				top_left = {px, py},
+				bottom_right = {px + glyph.xoff2-glyph.xoff, py + glyph.yoff2-glyph.yoff},
+				color_top = color,
+				color_bottom = color,
+				top_left_uv = {glyph.u0, glyph.v0},
+				bottom_right_uv = {glyph.u1, glyph.v1},
+				clip_rect = clip_rect,
+				texture_index = glyph.texture_index,
+				sampler_index = renderer.sampler_index,
+			})
+		}
+		cursor_x += glyph.advance_x
+		cursor_y += glyph.advance_y
 	}
 }
 
 ui_renderer_push_icon :: proc(
 	renderer: ^UI_Renderer,
-	text_renderer: ^gpu_text.Text_Renderer,
+	font: ^gpu_text.Text_Font,
 	codepoint: rune,
-	x, y, width, height, size: f32,
+	x, y, width, height: f32,
 	color: [4]f32,
 	clip_rect: [4]f32,
 ) {
-	if renderer == nil || text_renderer == nil {
+	if renderer == nil || font == nil || codepoint == 0 || width <= 0 || height <= 0 {
 		return
 	}
-	quad, ok := gpu_text.text_build_icon_quad(text_renderer, codepoint, x, y, width, height, size)
-	if !ok {
+	glyph, ok := gpu_text.text_font_get_glyph(font, codepoint)
+	if !ok || glyph.state != .Resident {
 		return
 	}
-	append(&renderer.instances, UI_Instance{
-		top_left = quad.top_left,
-		bottom_right = quad.bottom_right,
+	glyph_width := glyph.xoff2 - glyph.xoff
+	glyph_height := glyph.yoff2 - glyph.yoff
+	px := math.floor(x + (width-glyph_width)*0.5 + 0.5)
+	py := math.floor(y + (height-glyph_height)*0.5 + 0.5)
+	_ = ui_renderer_push_instance(renderer, UI_Instance{
+		top_left = {px, py},
+		bottom_right = {px + glyph_width, py + glyph_height},
 		color_top = color,
 		color_bottom = color,
-		top_left_uv = quad.top_left_uv,
-		bottom_right_uv = quad.bottom_right_uv,
+		top_left_uv = {glyph.u0, glyph.v0},
+		bottom_right_uv = {glyph.u1, glyph.v1},
 		clip_rect = clip_rect,
-		texture_index = quad.texture_index,
+		texture_index = glyph.texture_index,
 		sampler_index = renderer.sampler_index,
 	})
 }
@@ -200,17 +237,14 @@ ui_renderer_draw :: proc(
 	cmd: vk.CommandBuffer,
 	extent: vk.Extent2D,
 ) {
-	if renderer == nil || len(renderer.instances) == 0 {
+	if renderer == nil || renderer.instance_count == 0 || renderer.active_buffer == nil {
 		return
 	}
-	frame_slot := int(gpu.gpu_current_frame_slot(ctx))
-	instance_buffer := &renderer.instance_buffers[frame_slot]
-	buffer_size := u64(len(renderer.instances) * size_of(UI_Instance))
-	if buffer_size > instance_buffer.size {
-		fmt.println("[WARN] UI instance buffer overflow, skipping UI")
-		return
+	if renderer.overflowed {
+		fmt.println("[WARN] UI instance buffer full, UI was truncated")
 	}
-	libc.memcpy(instance_buffer.cpu, raw_data(renderer.instances[:]), uint(buffer_size))
+	instance_buffer := renderer.active_buffer
+	buffer_size := u64(renderer.instance_count * size_of(UI_Instance))
 	gpu.gpu_flush_buffer(instance_buffer, 0, buffer_size)
 
 	viewport := vk.Viewport{
@@ -239,5 +273,5 @@ ui_renderer_draw :: proc(
 	)
 	offset: vk.DeviceSize
 	vk.CmdBindVertexBuffers(cmd, 0, 1, &instance_buffer.buffer, &offset)
-	vk.CmdDraw(cmd, 6, auto_cast len(renderer.instances), 0, 0)
+	vk.CmdDraw(cmd, 6, auto_cast renderer.instance_count, 0, 0)
 }
