@@ -2,6 +2,7 @@ package main
 
 import "core:c"
 import "core:slice"
+import "core:strconv"
 import "core:fmt"
 import "core:os"
 import "core:time"
@@ -113,7 +114,7 @@ main :: proc() {
 		fmt.println("[FONT][ERROR] Could not open font");
 		return
 	}
-	ui_font, ui_font_ok := gpu_text.text_font_create(&font_renderer, roboto_mono_id, 24)
+	ui_font, ui_font_ok := gpu_text.text_font_create(&font_renderer, roboto_mono_id, 18)
 	if !ui_font_ok {
 		fmt.println("[FONT][ERROR] Could not create UI font size")
 		return
@@ -130,7 +131,7 @@ main :: proc() {
 		fmt.println("[FONT][ERROR] Could not open font");
 		return
 	}
-	ui_font_icon, icon_font_ok := gpu_text.text_font_create(&font_renderer, icons_font_id, 24)
+	ui_font_icon, icon_font_ok := gpu_text.text_font_create(&font_renderer, icons_font_id, 18)
 	if !icon_font_ok {
 		fmt.println("[FONT][ERROR] Could not create icon font size")
 		return
@@ -155,6 +156,12 @@ main :: proc() {
 	defer app.csv_documents_destroy(app_context.csv_documents[:])
 	defer delete(app_context.csv_documents)
 	defer delete(app_context.csv_files)
+
+	// graph rendering
+	//
+	graph_renderer : app.GraphChartState
+	app.ui_graph_charts_init(&graph_renderer, ctx)
+	defer app.ui_graph_charts_destroy(&graph_renderer)
 
 	drag_and_drop := false
 
@@ -227,13 +234,10 @@ main :: proc() {
 		}
 
 		mui.begin(ui_ctx)
-		if mui.begin_window(ui_ctx, "Hello Window", mui.Rect{100, 100, 400, 400}) {
+		if mui.begin_window(ui_ctx, "Debug Info", mui.Rect{100, 100, 400, 400}) {
 			win_size := mui.get_layout(ui_ctx).size;
 			pad := mui.get_layout(ui_ctx).indent;
 			mui.layout_row(ui_ctx, []i32{win_size.x - ui_ctx.style.padding / 2}, mui.get_layout(ui_ctx).size.y)
-			mui.label(ui_ctx, "This is a label")
-			mui.layout_row(ui_ctx, []i32{win_size.x - ui_ctx.style.padding / 2}, mui.get_layout(ui_ctx).size.y)
-			mui.button(ui_ctx, "This is a button", .NONE, {})
 
 			builder : strings.Builder
 			strings.builder_init(&builder, context.temp_allocator)
@@ -256,9 +260,16 @@ main :: proc() {
 		if len(app_context.csv_files) > 0 {
 			if mui.begin_window(ui_ctx, "Files", mui.Rect{40, 40, 400, 240}) {
 				win_size := mui.get_layout(ui_ctx).size;
-				mui.layout_row(ui_ctx, []i32{win_size.x - 110, 110}, 0)
+				mui.layout_row(ui_ctx, []i32{win_size.x - 220, 220}, 0)
 				for filename, file_index in app_context.csv_files {
-					mui.label(ui_ctx, filename)
+					stripped_file_name, err := strings.split_after(filename, "/", context.temp_allocator)
+					file_local : string 
+					if err != .None {
+						file_local = filename
+					} else {
+						file_local = stripped_file_name[len(stripped_file_name) - 1]
+					}
+					mui.label(ui_ctx, file_local)
 					mui.push_id_uintptr(ui_ctx, uintptr(file_index))
 					button_label := "Not Processed"
 					if app.csv_document_exists(app_context.csv_documents[:], filename) {
@@ -294,6 +305,9 @@ main :: proc() {
 
 			    for row_index in first..<last {
 			        y := i32(row_index) * row_pitch
+		            if row_index % 2 == 0 {
+		            	mui.draw_rect(ui_ctx, mui.Rect{x = layout.body.x, y = layout.body.y + y, w = layout.body.w, h = row_pitch}, mui.Color{22, 22, 22, 255})
+		            }
 			        for value, column_index in document.rows[row_index] {
 			            x := i32(column_index) * column_w
 			            mui.layout_set_next(ui_ctx, mui.Rect{x, y, column_w, row_h}, true)
@@ -318,10 +332,45 @@ main :: proc() {
 
 		mui.end(ui_ctx)
 
+
+		graph_data_global := make([dynamic]f32, context.temp_allocator)
+		for document, document_index in app_context.csv_documents {
+			graph_data := make([]f32, len(document.rows), context.temp_allocator)
+			for row_idx in 0..<len(document.rows) {
+				val := document.rows[row_idx][len(document.rows[row_idx]) - 1]
+				val_num, _:= strconv.parse_f32(val)
+				graph_data[row_idx] = val_num
+			}
+
+			append_elems(&graph_data_global, ..graph_data[:])
+		}
+
+
 		frame, frame_err := gpu.gpu_begin_frame(ctx)
 		if !gpu.gpu_error_is_ok(frame_err) {
 			free_all(context.temp_allocator)
 			continue
+		}
+
+		// graph testing
+		//
+		if len(graph_data_global) > 0 {
+			// the + 2 comes for the 2 extra bars we are going to render for coordinates
+			//
+			upload_data := make([]app.GraphGpuData, len(graph_data_global) + 2, context.temp_allocator)
+			col_width := cast(f32)frame.extent.width / cast(f32)len(graph_data_global)
+			x_off : f32 = 20.0
+			for data, idx in graph_data_global {
+				upload_data[idx] = app.ui_graph_charts_formalize_data(&graph_renderer, x_off, cast(f32)frame.extent.height + 10.0, col_width, data)
+				x_off += col_width
+			}
+
+			// we build here for example the lines for reference data
+			//
+			upload_data[len(graph_data_global)]   = app.ui_graph_charts_formalize_data(&graph_renderer, 20, cast(f32)frame.extent.height + 5.0, 10.0, cast(f32)frame.extent.height / 2.0, {0.1, 0.1, 0.25, 1.0}, {0.1, 0.1, 0.35, 1.0})
+			upload_data[len(graph_data_global)+1] = app.ui_graph_charts_formalize_data(&graph_renderer, 20, cast(f32)frame.extent.height + 5.0, cast(f32)frame.extent.width - 40.0, 10.0, {0.1, 0.1, 0.25, 1.0}, {0.1, 0.1, 0.35, 1.0})
+
+			app.ui_graph_charts_push_data(&graph_renderer, upload_data)
 		}
 
 		current_scissor := vk.Rect2D{
@@ -433,6 +482,9 @@ main :: proc() {
 		})
 		app.ui_renderer_draw(ctx, &ui_renderer, frame.cmd, frame.extent)
 
+		if len(graph_data_global) > 0 {
+			app.ui_graph_charts_render(&graph_renderer, frame.cmd)
+		}
 		gpu.gpu_end_swapchain_rendering(ctx, frame)
 		_ = gpu.gpu_end_frame(ctx, frame)
 		if smoke_frames > 0 {

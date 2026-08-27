@@ -1,9 +1,9 @@
 #version 460
 
 layout(location = 0) in vec2 frag_uv;
-layout(location = 1) in vec4 frag_color;
-layout(location = 2) in vec4 frag_pos;
-layout(location = 3) in vec2 frag_screen_size;
+layout(location = 1) in vec4 frag_color_top;
+layout(location = 2) in vec4 frag_color_bottom;
+layout(location = 3) in vec2 frag_corner;
 
 layout(location = 0) out vec4 out_color;
 
@@ -15,14 +15,5 @@ float compute_sdf(vec2 p, vec2 b, float r) {
 }
 
 void main() {
-#if 0
-	vec2 frag_half_size = frag_screen_size / 2;
-	vec2 screen_pos = (frag_pos.xy - 0.5) * frag_screen_size;
-	float d = compute_sdf(screen_pos, frag_half_size, 10);
-
-	float alpha = 1.0 - smoothstep(-1.0, 1.0, d);
-    out_color = vec4(frag_color.rgb, frag_color.a * alpha);
-#else 
-	out_color = frag_color;
-#endif 
+	out_color = mix(frag_color_top, frag_color_bottom, frag_corner.y);
 }
