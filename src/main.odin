@@ -370,7 +370,7 @@ main :: proc() {
 					if ndc_mouse_pos.y >= upload_data[idx].top_left.y && ndc_mouse_pos.y <= upload_data[idx].bottom_right.y {
 						app_context.highlighted_row = idx
 						upload_data[idx].color_top = {0.6, 0.15, 0.15, 1.0}
-						upload_data[idx].color_top = {0.3, 0.15, 0.15, 1.0}
+						upload_data[idx].color_bottom = {0.3, 0.15, 0.15, 1.0}
 					}
 				}
 				x_off += col_width
