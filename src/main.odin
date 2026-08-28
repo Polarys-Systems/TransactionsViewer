@@ -305,7 +305,10 @@ main :: proc() {
 
 			    for row_index in first..<last {
 			        y := i32(row_index) * row_pitch
-		            if row_index % 2 == 0 {
+		            
+		            if cast(int)row_index == app_context.highlighted_row {
+		            	mui.draw_rect(ui_ctx, mui.Rect{x = layout.body.x, y = layout.body.y + y, w = layout.body.w, h = row_pitch}, mui.Color{80, 22, 22, 255})
+		            } else if row_index % 2 == 0 {
 		            	mui.draw_rect(ui_ctx, mui.Rect{x = layout.body.x, y = layout.body.y + y, w = layout.body.w, h = row_pitch}, mui.Color{22, 22, 22, 255})
 		            }
 			        for value, column_index in document.rows[row_index] {
@@ -362,6 +365,14 @@ main :: proc() {
 			x_off : f32 = 20.0
 			for data, idx in graph_data_global {
 				upload_data[idx] = app.ui_graph_charts_formalize_data(&graph_renderer, x_off, cast(f32)frame.extent.height + 10.0, col_width, data)
+				ndc_mouse_pos : [2]f32 = {(cast(f32)ui_ctx.mouse_pos.x / cast(f32)frame.extent.width) * 2.0 - 1.0, (cast(f32)ui_ctx.mouse_pos.y / cast(f32)frame.extent.height) * 2.0 - 1.0}
+				if ndc_mouse_pos.x >= upload_data[idx].top_left.x && ndc_mouse_pos.x <= upload_data[idx].bottom_right.x {
+					if ndc_mouse_pos.y >= upload_data[idx].top_left.y && ndc_mouse_pos.y <= upload_data[idx].bottom_right.y {
+						app_context.highlighted_row = idx
+						upload_data[idx].color_top = {0.6, 0.15, 0.15, 1.0}
+						upload_data[idx].color_top = {0.3, 0.15, 0.15, 1.0}
+					}
+				}
 				x_off += col_width
 			}
 

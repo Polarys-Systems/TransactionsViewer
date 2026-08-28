@@ -79,6 +79,30 @@ rect2d_set_offset :: proc(self: ^Rect2d, w, h : f32) {
 	self.height = h;
 }
 
+rect2d_init :: proc {
+	rect2d_init_simple,
+	rect2d_init_vec2, 
+	rect2d_init_vec4
+}
+
+rect2d_init_simple :: proc(x, y, w, h : f32) -> Rect2d {
+	return Rect2d {
+		x, y, w, h
+	}
+}
+
+rect2d_init_vec2 :: proc(top_left : [2]f32, size : [2]f32) -> Rect2d {
+	return Rect2d {
+		top_left.x, top_left.y, size.x, size.y
+	}
+}
+
+rect2d_init_vec4 :: proc(vec_rect : [4]f32) -> Rect2d {
+	return Rect2d {
+		vec_rect.x, vec_rect.y, vec_rect.z, vec_rect.w
+	}
+}
+
 // --------------------------------------------------------------- //
 
 UiFont :: distinct uintptr 

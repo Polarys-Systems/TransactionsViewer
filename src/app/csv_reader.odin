@@ -11,6 +11,8 @@ CSV_Document :: struct {
 	rows:          [][]string,
 	column_count:  int,
 	error_message: string,
+
+	name_col_map : map[string]int,
 }
 
 csv_detect_delimiter :: proc(input: string) -> rune {
