@@ -7,6 +7,8 @@ context_t :: struct {
     csv_documents    : [dynamic]CSV_Document,
     current_data_col : int,
     highlighted_row  : int,
+    jump_to_row      : int,
+    mouse_down_issued: bool,
 }
 
 context_t_default :: proc() -> context_t {

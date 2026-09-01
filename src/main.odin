@@ -150,9 +150,12 @@ main :: proc() {
 	duration : time.Duration = {};
 	start_time := time.tick_now()
 
+	/**< @todo Make an app.init function */
 	app_context : app.context_t
-	app_context.csv_files = make([dynamic]string, 0, 16, context.allocator)
+	app_context.csv_files     = make([dynamic]string, 0, 16, context.allocator)
 	app_context.csv_documents = make([dynamic]app.CSV_Document, 0, 16, context.allocator)
+	app_context.jump_to_row   = -1
+
 	defer app.csv_documents_destroy(app_context.csv_documents[:])
 	defer delete(app_context.csv_documents)
 	defer delete(app_context.csv_files)
@@ -169,6 +172,9 @@ main :: proc() {
 
 		now := time.tick_now();
 		mouse_scale := window_pixel_scale(gpu.gpu_window(ctx))
+
+		/**< @todo Move to a begin function or something */
+		app_context.mouse_down_issued = false
 
 		event: SDL.Event
 		for SDL.PollEvent(&event) {
@@ -193,6 +199,7 @@ main :: proc() {
 					i32(event.button.y * mouse_scale[1]),
 					.LEFT,
 				)
+				app_context.mouse_down_issued = true
 			case .MOUSE_BUTTON_UP:
 				mui.input_mouse_up(
 					ui_ctx,
@@ -303,6 +310,12 @@ main :: proc() {
 			        (window.scroll.y + layout.body.h) / row_pitch + 2,
 			    )
 
+			    if app_context.jump_to_row >= 0 {
+			    	first = auto_cast app_context.jump_to_row
+			    	window.scroll.y = cast(i32)app_context.jump_to_row * row_pitch
+			    	app_context.jump_to_row = -1
+			    }
+
 			    for row_index in first..<last {
 			        y := i32(row_index) * row_pitch
 		            
@@ -361,16 +374,21 @@ main :: proc() {
 			// the + 2 comes for the 2 extra bars we are going to render for coordinates
 			//
 			upload_data := make([]app.GraphGpuData, len(graph_data_global) + 2, context.temp_allocator)
-			col_width := cast(f32)frame.extent.width / cast(f32)len(graph_data_global)
 			x_off : f32 = 20.0
+			col_width := (cast(f32)frame.extent.width - 2 * x_off) / cast(f32)len(graph_data_global)
 			for data, idx in graph_data_global {
-				upload_data[idx] = app.ui_graph_charts_formalize_data(&graph_renderer, x_off, cast(f32)frame.extent.height + 10.0, col_width, data)
+				upload_data[idx] = app.ui_graph_charts_formalize_data(&graph_renderer, x_off, cast(f32)frame.extent.height - 10.0, col_width, data)
 				ndc_mouse_pos : [2]f32 = {(cast(f32)ui_ctx.mouse_pos.x / cast(f32)frame.extent.width) * 2.0 - 1.0, (cast(f32)ui_ctx.mouse_pos.y / cast(f32)frame.extent.height) * 2.0 - 1.0}
 				if ndc_mouse_pos.x >= upload_data[idx].top_left.x && ndc_mouse_pos.x <= upload_data[idx].bottom_right.x {
 					if ndc_mouse_pos.y >= upload_data[idx].top_left.y && ndc_mouse_pos.y <= upload_data[idx].bottom_right.y {
 						app_context.highlighted_row = idx
 						upload_data[idx].color_top = {0.6, 0.15, 0.15, 1.0}
 						upload_data[idx].color_bottom = {0.3, 0.15, 0.15, 1.0}
+
+						if app_context.mouse_down_issued {
+							app_context.jump_to_row = idx
+							app_context.mouse_down_issued = false
+						}
 					}
 				}
 				x_off += col_width
@@ -378,8 +396,8 @@ main :: proc() {
 
 			// we build here for example the lines for reference data
 			//
-			upload_data[len(graph_data_global)]   = app.ui_graph_charts_formalize_data(&graph_renderer, 20, cast(f32)frame.extent.height + 5.0, 10.0, cast(f32)frame.extent.height / 2.0, {0.1, 0.1, 0.25, 1.0}, {0.1, 0.1, 0.35, 1.0})
-			upload_data[len(graph_data_global)+1] = app.ui_graph_charts_formalize_data(&graph_renderer, 20, cast(f32)frame.extent.height + 5.0, cast(f32)frame.extent.width - 40.0, 10.0, {0.1, 0.1, 0.25, 1.0}, {0.1, 0.1, 0.35, 1.0})
+			upload_data[len(graph_data_global)]   = app.ui_graph_charts_formalize_data(&graph_renderer, 20, cast(f32)frame.extent.height - 10.0, 5.0, cast(f32)frame.extent.height / 2.0, {0.1, 0.1, 0.55, 1.0}, {0.1, 0.1, 0.35, 1.0})
+			upload_data[len(graph_data_global)+1] = app.ui_graph_charts_formalize_data(&graph_renderer, 20, cast(f32)frame.extent.height - 10.0, cast(f32)frame.extent.width - 40.0, 5.0, {0.1, 0.1, 0.55, 1.0}, {0.1, 0.1, 0.35, 1.0})
 
 			app.ui_graph_charts_push_data(&graph_renderer, upload_data)
 		}
